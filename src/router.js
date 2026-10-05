@@ -61,7 +61,20 @@ export class Router {
       const pb = this.config.providerMeta(b)?.priority ?? 999;
       return pa - pb;
     });
-    return [...order, ...rest];
+    const result = [...order, ...rest];
+    // Penghemat: provider gratis didahulukan, tetapi urutan manual tetap adil
+    // di dalam kelompok gratis/berbayar dan fallback tetap identik.
+    if (s.strategy === 'free-first') {
+      return result.sort((a, b) => {
+        const free = (id) => this.config.providerMeta(id)?.tier === 'free' ? 0 : 1;
+        return free(a) - free(b);
+      });
+    }
+    return result;
+  }
+
+  isModelHidden(providerId, model) {
+    return (this.config.data.settings.hiddenModels || []).includes(`${providerId}:${model}`);
   }
 
   availableProviders(now = Date.now()) {
@@ -120,17 +133,24 @@ export class Router {
     else this.modelsCache.clear();
   }
 
-  async allModels() {
+  async allModels({ includeHidden = false } = {}) {
+    const providers = this.availableProviders();
+    // Semua katalog independen: fetch paralel memangkas waktu tunggu dari jumlah
+    // seluruh provider menjadi provider paling lambat.
+    const lists = await Promise.all(providers.map(async (p) => {
+      try { return await this.liveModels(p.id, p.pconf, p.meta); } catch { return []; }
+    }));
     const out = [];
     const seen = new Set();
-    for (const p of this.availableProviders()) {
-      let models = [];
-      try { models = await this.liveModels(p.id, p.pconf, p.meta); } catch { /* kosong */ }
-      for (const m of models) {
+    providers.forEach((p, i) => {
+      for (const m of lists[i]) {
         const k = `${p.id}:${m}`;
-        if (!seen.has(k)) { seen.add(k); out.push({ id: m, provider: p.id }); }
+        if (!seen.has(k) && (includeHidden || !this.isModelHidden(p.id, m))) {
+          seen.add(k);
+          out.push({ id: m, provider: p.id, hidden: this.isModelHidden(p.id, m) });
+        }
       }
-    }
+    });
     return out;
   }
 
@@ -145,7 +165,7 @@ export class Router {
     if (model === 'auto' || model === 'lollm' || model === 'lollm-auto') {
       for (const p of avail) {
         if (!providerHealthy(p.pconf, now)) continue;
-        const models = await this.liveModels(p.id, p.pconf, p.meta);
+        const models = (await this.liveModels(p.id, p.pconf, p.meta)).filter((m) => !this.isModelHidden(p.id, m));
         if (models.length > 0) return [{ providerId: p.id, model: models[0] }];
       }
       return [];
@@ -157,7 +177,7 @@ export class Router {
       const provId = pin[1].toLowerCase();
       const rest = pin[2];
       const p = avail.find((x) => x.id === provId);
-      if (p) return [{ providerId: p.id, model: rest }];
+      if (p && !this.isModelHidden(p.id, rest)) return [{ providerId: p.id, model: rest }];
     }
 
     // 3) Model persis ada di daftar live provider (urut prioritas)
@@ -165,7 +185,7 @@ export class Router {
     for (const p of avail) {
       let models = [];
       try { models = await this.liveModels(p.id, p.pconf, p.meta); } catch { /* kosong */ }
-      if (models.includes(model)) targets.push({ providerId: p.id, model });
+      if (models.includes(model) && !this.isModelHidden(p.id, model)) targets.push({ providerId: p.id, model });
     }
     return targets;
   }
@@ -208,6 +228,7 @@ export class Router {
         if (already.has(p.id)) continue;
         let models = [];
         try { models = await this.liveModels(p.id, p.pconf, p.meta); } catch { /* kosong */ }
+        models = models.filter((m) => !this.isModelHidden(p.id, m));
         if (models.length > 0) plans.push({ providerId: p.id, model: models[0], anyFallback: true });
       }
     }
@@ -219,8 +240,9 @@ export class Router {
 
     // Round-robin: rotasi urutan plans
     if (settings.strategy === 'round-robin') {
+      const start = this.rrIndex % plans.length;
       this.rrIndex = (this.rrIndex + 1) % plans.length;
-      plans = [...plans.slice(this.rrIndex), ...plans.slice(0, this.rrIndex)];
+      plans = [...plans.slice(start), ...plans.slice(0, start)];
     }
 
     const usedAny = [];
@@ -304,7 +326,7 @@ export class Router {
             anyFallback: plan.anyFallback || false,
             trail,
           });
-          this.config.save();
+          this.config.scheduleSave();
           return { ok: true, providerId: plan.providerId, model: plan.model, status: 200, ms, trail };
         } catch (err) {
           if (err instanceof UpstreamError && err.kind === 'aborted') {
@@ -313,6 +335,7 @@ export class Router {
           }
           lastErr = err;
           reportFailure(pconf, key.id, err.kind || 'network', { error: err.message, retryAfterSec: err.retryAfterSec });
+          this.config.scheduleSave();
           trail.push({
             provider: plan.providerId, key: key.label, model: plan.model,
             kind: err.kind, status: err.status || 0, error: String(err.message).slice(0, 160),

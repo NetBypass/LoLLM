@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+web/node_modules
+web/src
+web/test
+data/*
+!data/.gitkeep
+*.log
+.env*
