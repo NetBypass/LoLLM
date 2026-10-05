@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-950: #06090f;
+  --color-ink-900: #0b0f17;
+  --color-ink-850: #0e1420;
+  --color-ink-800: #121826;
+  --color-ink-700: #1a2334;
+  --color-ink-600: #243149;
+  --color-mist-500: #8b98ad;
+  --color-mist-400: #a7b2c5;
+  --color-mist-300: #c7d0de;
+  --color-brand-400: #9d7bff;
+  --color-brand-500: #7c5cff;
+  --color-brand-600: #5a3df0;
+  --color-neon-400: #00d4ff;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@keyframes tin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+@keyframes pop { from { opacity: 0; transform: scale(.97) translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes shake { 10%, 90% { transform: translateX(-1px); } 20%, 80% { transform: translateX(2px); } 30%, 50%, 70% { transform: translateX(-4px); } 40%, 60% { transform: translateX(4px); } }
+@keyframes float { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(18px, -14px) scale(1.05); } }
+@keyframes slidein { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+
+html { color-scheme: dark; }
+body { background: var(--color-ink-900); color: var(--color-mist-300); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+::selection { background: rgba(124, 92, 255, 0.35); }
+
+* { scrollbar-width: thin; scrollbar-color: #243149 transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #243149; border-radius: 99px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+input, textarea, select { outline: none; }
+input:focus, textarea:focus, select:focus { border-color: rgba(124, 92, 255, 0.55) !important; box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.12); }
+
+.field {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: var(--color-mist-300);
+  border-radius: 0.65rem;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.85rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.field::placeholder { color: #52607a; }
+.field-mono { font-family: var(--font-mono); font-size: 0.8rem; }
+
+.gtext {
+  background: linear-gradient(135deg, var(--color-brand-400), var(--color-neon-400));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}

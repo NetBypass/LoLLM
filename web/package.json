@@ -1,0 +1,25 @@
+{
+  "name": "lollm-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "npm run test:audit && esbuild test/ssr.jsx --bundle --format=cjs --jsx=automatic --platform=node --outfile=/tmp/lollm-ssr-test.cjs && node /tmp/lollm-ssr-test.cjs",
+    "test:audit": "node test/audit.mjs"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.545.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tailwindcss": "^4.1.0",
+    "vite": "^7.0.0"
+  }
+}
