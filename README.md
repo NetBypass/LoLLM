@@ -167,8 +167,22 @@ Format `provider/model` (mis. `groq/llama-3.3-70b-versatile`) mem-pin provider.
 
 LoLLM **tidak menyimpan daftar model hardcode**. `/v1/models` kosong sampai ada API key aktif,
 lalu terisi **langsung dari endpoint provider** (di-cache 10 menit; gagal fetch = kosong, coba lagi 30s —
-tidak pernah ada daftar palsu). Resolusi model (`auto`, pencocokan nama, last-resort) juga hanya
-memakai daftar live. Setiap perubahan key/provider otomatis mem-bust cache (`/api/models?refresh=1` untuk paksa).
+tidak pernah ada daftar palsu). Fetch banyak provider berjalan paralel agar waktu muat mengikuti provider
+terlambat, bukan jumlah seluruh provider.
+
+Di tab **Providers**, setiap model tampil sebagai tag dengan checkbox. Model dapat dihapus satuan,
+massal berdasarkan pilihan, atau sekaligus. Karena katalog berasal dari server provider, "hapus" berarti
+menyembunyikan model secara persisten dari `/v1/models`, Playground, dan auto-routing; tombol **Pulihkan**
+mengembalikannya kapan saja. Resolusi model (`auto`, pencocokan nama, last-resort) hanya memakai daftar live
+yang tidak disembunyikan. Setiap perubahan key/provider otomatis mem-bust cache
+(`/api/models?refresh=1` untuk paksa).
+
+### Mode penghemat tanpa mengurangi performa
+
+Pilih strategi **Free-first** di tab Routing. LoLLM mendahulukan seluruh provider gratis yang sehat,
+sementara provider berbayar tetap menjadi fallback dengan streaming, timeout, dan kualitas request yang sama.
+Tidak ada pemotongan prompt maupun `max_tokens`. Jalur request juga memakai cache model dan penulisan statistik
+tertunda agar disk I/O tidak menghambat respons.
 
 ## License
 

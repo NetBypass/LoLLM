@@ -141,8 +141,35 @@ export async function startServer(opts = {}) {
 
     if (method === 'GET' && sub === 'models') {
       if (url.searchParams.get('refresh')) router.invalidateModels();
-      const models = await router.allModels();
-      return json(res, 200, { models });
+      const includeHidden = url.searchParams.get('hidden') === '1';
+      const models = await router.allModels({ includeHidden });
+      return json(res, 200, { models, hiddenCount: config.data.settings.hiddenModels.length });
+    }
+
+    // "Hapus" model live berarti sembunyikan secara persisten dari katalog dan routing;
+    // model upstream tidak mungkin dihapus dari server milik provider.
+    if (method === 'DELETE' && sub === 'models') {
+      const b = JSON.parse(await readBody(req) || '{}');
+      const visible = await router.allModels({ includeHidden: false });
+      const requested = b.all === true ? visible : (Array.isArray(b.models) ? b.models : []);
+      const valid = requested.slice(0, 10000)
+        .map((m) => typeof m === 'string' ? m : `${m?.provider || ''}:${m?.id || ''}`)
+        .filter((key) => visible.some((m) => `${m.provider}:${m.id}` === key));
+      if (!valid.length) throw new ApiError(400, 'Pilih minimal satu model yang valid');
+      config.data.settings.hiddenModels = [...new Set([...config.data.settings.hiddenModels, ...valid])];
+      config.save();
+      return json(res, 200, { ok: true, removed: valid.length, hiddenCount: config.data.settings.hiddenModels.length });
+    }
+
+    if (method === 'POST' && sub === 'models/restore') {
+      const b = JSON.parse(await readBody(req) || '{}');
+      const keys = Array.isArray(b.models) ? new Set(b.models.map(String)) : null;
+      const before = config.data.settings.hiddenModels.length;
+      config.data.settings.hiddenModels = b.all === true
+        ? []
+        : config.data.settings.hiddenModels.filter((key) => !keys?.has(key));
+      config.save();
+      return json(res, 200, { ok: true, restored: before - config.data.settings.hiddenModels.length });
     }
 
     if (method === 'POST' && sub === 'keys') {
@@ -301,6 +328,7 @@ export async function startServer(opts = {}) {
         if (Number.isFinite(Number(inc.maxAttempts))) s.maxAttempts = Math.min(Math.max(Number(inc.maxAttempts), 1), 12);
         if (typeof inc.authRequired === 'boolean') s.authRequired = inc.authRequired;
         if (typeof inc.allowAnyFallback === 'boolean') s.allowAnyFallback = inc.allowAnyFallback;
+        if (Array.isArray(inc.hiddenModels)) s.hiddenModels = [...new Set(inc.hiddenModels.filter((x) => typeof x === 'string'))].slice(0, 10000);
         if (inc.timeouts) {
           for (const k of ['connectMs', 'firstByteMs', 'totalMs', 'streamIdleMs']) {
             const v = Number(inc.timeouts[k]);

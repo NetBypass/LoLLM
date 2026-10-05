@@ -70,8 +70,32 @@ function ProviderCard({ p, conf, actions, liveAll, idx = 0 }) {
   const [label, setLabel] = useState('');
   const [bulkVal, setBulkVal] = useState('');
   const [adding, setAdding] = useState(false);
+  const [selectedModels, setSelectedModels] = useState(() => new Set());
+  const [removingModels, setRemovingModels] = useState(false);
   const keys = conf?.keys || [];
   const live = (liveAll || []).filter((m) => m.provider === p.id).map((m) => m.id);
+
+  function toggleModel(model) {
+    setSelectedModels((current) => {
+      const next = new Set(current);
+      if (next.has(model)) next.delete(model); else next.add(model);
+      return next;
+    });
+  }
+
+  async function removeModels(all = false) {
+    const chosen = all ? live : [...selectedModels];
+    if (!chosen.length || !confirm(`Sembunyikan ${chosen.length} model dari katalog dan routing?`)) return;
+    setRemovingModels(true);
+    try {
+      await api('models', { method: 'DELETE', body: { models: chosen.map((id) => ({ provider: p.id, id })) } });
+      setSelectedModels(new Set());
+      await actions.refreshModels();
+      await actions.reload();
+      actions.toast(`${chosen.length} model dihapus dari daftar`, 'okk');
+    } catch (e) { actions.toast(e.message, 'err'); }
+    setRemovingModels(false);
+  }
 
   async function add() {
     if (!keyVal.trim()) return actions.toast('Key-nya kosong dulu, dewa 🙏', 'err');
@@ -111,14 +135,26 @@ function ProviderCard({ p, conf, actions, liveAll, idx = 0 }) {
       </div>
       {p.note && <p className="text-[12.5px] text-mist-500 mt-2.5 leading-relaxed">{p.note}</p>}
       {live.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-1.5 mt-3">
-          <span className="inline-flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-emerald-300 mr-0.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> LIVE · {live.length}
-          </span>
-          {live.slice(0, 5).map((m) => (
-            <span key={m} title={m} className="font-mono text-[11px] text-neon-400/90 bg-neon-400/[0.07] border border-neon-400/15 rounded-md px-2 py-0.5 max-w-[200px] truncate">{m}</span>
-          ))}
-          {live.length > 5 && <span className="font-mono text-[11px] text-mist-500 px-1 py-0.5">+{live.length - 5} lagi</span>}
+        <div className="mt-3 rounded-xl border border-white/[0.06] bg-black/10 p-2.5">
+          <div className="flex flex-wrap items-center gap-2 mb-2">
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-emerald-300 mr-auto">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> LIVE · {live.length} MODEL
+            </span>
+            <button className="text-[11px] text-mist-400 hover:text-white cursor-pointer" onClick={() => setSelectedModels(selectedModels.size === live.length ? new Set() : new Set(live))}>
+              {selectedModels.size === live.length ? 'Batal pilih semua' : 'Pilih semua'}
+            </button>
+            {selectedModels.size > 0 && <Btn size="sm" onClick={() => removeModels(false)} disabled={removingModels}><Trash2 size={11} /> Hapus dipilih ({selectedModels.size})</Btn>}
+            <Btn size="sm" onClick={() => removeModels(true)} disabled={removingModels}><Trash2 size={11} /> Hapus semua</Btn>
+          </div>
+          <div className="flex flex-wrap gap-1.5 max-h-36 overflow-auto">
+            {live.map((m) => (
+              <label key={m} title={m} className={clsx('inline-flex items-center gap-1.5 font-mono text-[11px] border rounded-md px-2 py-1 max-w-[240px] cursor-pointer transition-colors', selectedModels.has(m) ? 'text-white bg-brand-500/20 border-brand-400/40' : 'text-neon-400/90 bg-neon-400/[0.07] border-neon-400/15')}>
+                <input type="checkbox" className="accent-violet-500" checked={selectedModels.has(m)} onChange={() => toggleModel(m)} />
+                <span className="truncate">{m}</span>
+              </label>
+            ))}
+          </div>
+          <p className="text-[10.5px] text-mist-500 mt-2">Model yang dihapus disembunyikan permanen dari /v1/models dan tidak dipakai auto-routing.</p>
         </div>
       ) : keys.length > 0 ? (
         <p className="text-[11px] text-mist-500 mt-3">Daftar model belum bisa diambil dari endpoint — cek key/koneksi lalu muat ulang halaman.</p>
@@ -216,6 +252,15 @@ export default function Providers() {
           <input className="field pl-10" placeholder="Cari provider atau model…" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <span className="text-xs text-mist-500">{filtered.length} provider</span>
+        {(boot?.settings?.hiddenModels?.length || 0) > 0 && (
+          <Btn onClick={async () => {
+            try {
+              const r = await api('models/restore', { method: 'POST', body: { all: true } });
+              await refreshModels(); await reload();
+              toast(`${r.restored} model dipulihkan`, 'okk');
+            } catch (e) { toast(e.message, 'err'); }
+          }}>Pulihkan {boot.settings.hiddenModels.length} model</Btn>
+        )}
       </div>
 
       {GROUPS.map(([tier, title, desc, Icon]) => {

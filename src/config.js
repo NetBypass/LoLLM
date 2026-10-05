@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS = {
   maxAttempts: 6,
   authRequired: true,
   allowAnyFallback: true, // last-resort: pakai provider sehat mana pun kalau model asli habis
+  hiddenModels: [], // model live yang disembunyikan: "provider:model"
   timeouts: {
     connectMs: 8000, // fetch → headers
     firstByteMs: 20000, // headers → chunk pertama (stream)
@@ -59,6 +60,9 @@ export class Config {
     // Sanitize & defaults
     this.data.settings = { ...structuredClone(DEFAULT_SETTINGS), ...(this.data.settings || {}) };
     this.data.settings.timeouts = { ...DEFAULT_SETTINGS.timeouts, ...(this.data.settings.timeouts || {}) };
+    this.data.settings.hiddenModels = Array.isArray(this.data.settings.hiddenModels)
+      ? [...new Set(this.data.settings.hiddenModels.filter((x) => typeof x === 'string'))].slice(0, 10000)
+      : [];
     this.data.gateway = this.data.gateway || { apiKeys: [newGatewayKey()] };
     // Dashboard auth — default AKTIF dengan password default (disimpan sebagai hash)
     this.data.dashboard = this.data.dashboard || {};
@@ -119,6 +123,17 @@ export class Config {
     const tmp = this.file + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
     fs.renameSync(tmp, this.file);
+  }
+
+  // Statistik berubah pada tiap request. Tunda penulisan agar jalur panas tidak
+  // melakukan I/O sinkron berulang, tanpa mengorbankan persistensi konfigurasi.
+  scheduleSave(delayMs = 750) {
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      try { this.save(); } catch { /* akan dicoba lagi pada perubahan berikutnya */ }
+    }, delayMs);
+    this.saveTimer.unref?.();
   }
 
   ensureProvider(id) {
