@@ -253,6 +253,11 @@ export class Router {
             body: attemptBody, stream,
             settings, clientSignal: signal, clientRes,
             onUsage: { scan: onUsage.scan, report: onUsage.report },
+            streamHeaders: {
+              'x-lollm-provider': plan.providerId,
+              'x-lollm-model': plan.model,
+              'x-lollm-trail': encodeTrail(trail),
+            },
           });
 
           // Sukses

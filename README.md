@@ -43,19 +43,27 @@ Lalu tempel API key gratis dari katalog (lihat tabel di bawah) — tanpa konfigu
 ```
 http://localhost:5151
 ├── /                        Dashboard (UI)
+│    Overview · Playground · Providers & Keys · Routing · Logs
 ├── /healthz                 Health check
 ├── /v1                      API OpenAI-compatible
-│   ├── POST /chat/completions
+│   ├── POST /chat/completions   (stream & non-stream)
 │   ├── POST /completions
 │   ├── POST /embeddings
 │   └── GET  /models
 └── /api                     Admin API (untuk dashboard)
     ├── GET  /bootstrap · /status · /logs · /models
-    ├── POST /keys · /keys/test · /keys/toggle
+    ├── POST /keys (single & bulk) · /keys/test · /keys/toggle
     ├── POST /providers/toggle · /providers/custom
     ├── PUT  /settings · POST /gateway/rotate
+    ├── GET  /config/export · POST /config/import   (backup penuh)
     └── POST /logs/clear
 ```
+
+## 🎮 Playground
+
+Tab **Playground** di dashboard: chat langsung via `/v1` (streaming) — lihat provider mana yang
+menjawab, latensinya, dan **jejak fallback live** di bawah tiap jawaban. Multi-turn, system prompt,
+dan autocomplete daftar model.
 
 ## 🔑 Katalog provider bawaan
 
@@ -108,6 +116,14 @@ Gateway key dibuat otomatis saat pertama jalan; bisa di-rotate dari dashboard.
 
 Dashboard → tab Providers → Groq → tempel key pertama, kedua, ketiga... selesai.
 Key dipilih LRU (least-recently-used) di antara key yang sehat; statistik per key terlihat di UI.
+
+Punya banyak key sekaligus? Klik **⇊ Bulk** dan tempel satu key per baris —
+semuanya masuk pool dalam sekali klik (duplikat otomatis dilewati).
+
+### Pindah mesin? Backup & restore
+
+Tab **Routing → Backup & restore config**: export seluruh provider + pool key + pengaturan ke
+satu file JSON, import di mesin baru. ⚠ File berisi API key asli — simpan aman.
 
 ## 📖 API
 

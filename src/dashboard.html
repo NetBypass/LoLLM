@@ -133,7 +133,7 @@ const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 
-const S = { tab: "overview", boot: null, status: null, logs: [], reveal: new Set(), order: null, logsOn: true };
+const S = { tab: "overview", boot: null, status: null, logs: [], reveal: new Set(), order: null, logsOn: true, models: null, play: { messages: [], model: "auto", system: "", busy: false } };
 
 async function api(path, opts = {}) {
   const o = { method: opts.method || "GET", headers: { "x-lollm-session": SESSION, "Content-Type": "application/json" } };
@@ -429,6 +429,152 @@ function renderLogs() {
     </div>`;
 }
 
+// ---------------- RENDER: PLAYGROUND ----------------
+async function loadPlayModels() {
+  try {
+    const r = await api("models");
+    S.models = r.models || [];
+    if (S.tab === "playground") renderPlayground();
+  } catch {}
+}
+
+function renderPlayground() {
+  const opts = [...new Set((S.models || []).map((m) => m.id))].slice(0, 400);
+  $("#view").innerHTML = `
+    <div class="pg">
+      <div class="pg-side">
+        <div class="card">
+          <label class="f"><span>Model</span>
+            <input type="text" id="pg-model" list="dl-models" value="${esc(S.play.model)}" placeholder="auto">
+            <datalist id="dl-models">${opts.map((m) => `<option value="${esc(m)}">`).join("")}</datalist>
+          </label>
+          <label class="f"><span>System prompt (opsional)</span>
+            <textarea id="pg-system" rows="4" placeholder="Kamu asisten yang membantu…">${esc(S.play.system || "")}</textarea>
+          </label>
+          <button class="btn" style="width:100%" onclick="pgReset()">✨ Chat baru</button>
+          <p class="muted" style="font-size:11.5px;margin-top:12px;line-height:1.7">
+            <b>auto</b> = provider sehat terbaik · <b>provider/model</b> = pin provider.<br>
+            Jejak fallback tampil di bawah chat setelah tiap jawaban. ⚡
+          </p>
+        </div>
+      </div>
+      <div class="pg-side">
+        <div class="card pg-chat">
+          <div class="pg-msgs" id="pg-msgs">${
+            S.play.messages.length
+              ? S.play.messages.map((m) => `<div class="pg-msg ${m.role === "user" ? "user" : "assistant"}">${esc(m.content)}</div>`).join("")
+              : `<div class="empty">Kirim pesan pertamamu — saksikan fallback bekerja live. ⚡</div>`
+          }</div>
+          <div class="pg-input">
+            <textarea id="pg-input" placeholder="Tulis pesan… (Enter = kirim, Shift+Enter = baris baru)"></textarea>
+            <button class="btn primary" id="pg-send" onclick="sendChat()">Kirim ➤</button>
+          </div>
+          <div class="pg-status" id="pg-status"></div>
+        </div>
+      </div>
+    </div>`;
+  const inp = $("#pg-input");
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  });
+  inp.focus();
+}
+
+function pgAppend(role, text) {
+  const msgs = $("#pg-msgs");
+  const empty = msgs.querySelector(".empty");
+  if (empty) empty.remove();
+  const d = document.createElement("div");
+  d.className = "pg-msg " + (role === "user" ? "user" : "assistant");
+  d.textContent = text;
+  msgs.appendChild(d);
+  msgs.scrollTop = msgs.scrollHeight;
+  return d;
+}
+
+function decodeTrail(b64) {
+  try {
+    const s = atob(String(b64).replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(s).join("  →  ");
+  } catch { return ""; }
+}
+
+window.pgReset = () => {
+  S.play.messages = [];
+  S.play.system = "";
+  renderPlayground();
+};
+
+window.sendChat = async () => {
+  if (S.play.busy) return;
+  const text = $("#pg-input").value.trim();
+  if (!text) return;
+  S.play.model = $("#pg-model").value.trim() || "auto";
+  const system = $("#pg-system").value.trim();
+  if (system) {
+    S.play.messages = [{ role: "system", content: system }, ...S.play.messages.filter((m) => m.role !== "system")];
+    S.play.system = system;
+  } else {
+    S.play.messages = S.play.messages.filter((m) => m.role !== "system");
+    S.play.system = "";
+  }
+  S.play.messages.push({ role: "user", content: text });
+  $("#pg-input").value = "";
+  pgAppend("user", text);
+  const out = pgAppend("assistant", "…");
+  S.play.busy = true;
+  $("#pg-send").disabled = true;
+  $("#pg-status").textContent = "⚡ mengirim…";
+  const t0 = performance.now();
+  try {
+    const res = await fetch("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-lollm-session": SESSION },
+      body: JSON.stringify({ model: S.play.model, stream: true, messages: S.play.messages }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j?.error?.message || "HTTP " + res.status);
+    }
+    const prov = res.headers.get("x-lollm-provider") || "?";
+    const mdl = res.headers.get("x-lollm-model") || S.play.model;
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", full = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") continue;
+        try {
+          const j = JSON.parse(payload);
+          const d = j.choices?.[0]?.delta?.content;
+          if (d) { full += d; out.textContent = full; $("#pg-msgs").scrollTop = 1e9; }
+        } catch {}
+      }
+    }
+    if (!full) full = "(kosong)";
+    S.play.messages.push({ role: "assistant", content: full });
+    const ms = Math.round(performance.now() - t0);
+    const trail = decodeTrail(res.headers.get("x-lollm-trail"));
+    $("#pg-status").innerHTML = `✅ <b>${esc(prov)}</b> · ${esc(mdl)} · ${ms}ms${trail ? ` · fallback: <span class="mono" style="color:var(--warn)">${esc(trail)}</span>` : " · first hit 🎯"}`;
+  } catch (e) {
+    out.textContent = "✕ " + e.message;
+    out.style.border = "1px solid rgba(248,113,113,.4)";
+    $("#pg-status").textContent = "";
+  } finally {
+    S.play.busy = false;
+    const btn = $("#pg-send");
+    if (btn) btn.disabled = false;
+  }
+};
+
 // ---------------- ACTIONS ----------------
 window.toggleReveal = (rid) => { S.reveal.has(rid) ? S.reveal.delete(rid) : S.reveal.add(rid); renderProviders(); };
 
@@ -439,6 +585,23 @@ window.addKey = async (pid) => {
   try {
     await api("keys", { method: "POST", body: { providerId: pid, key: v, label: l } });
     toast("Key masuk pool ✓", "okk");
+    await reload();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+window.toggleBulk = (pid) => {
+  const el = $("#bulk-" + CSS.escape(pid));
+  if (el) el.style.display = el.style.display === "none" ? "block" : "none";
+};
+
+window.bulkAdd = async (pid) => {
+  const ta = $("#bulkt-" + CSS.escape(pid));
+  const keys = ta.value.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
+  if (!keys.length) return toast("Tidak ada key yang terbaca", "err");
+  try {
+    const r = await api("keys", { method: "POST", body: { providerId: pid, keys } });
+    toast(`${r.added} key masuk pool${r.skipped ? " · " + r.skipped + " dilewati" : ""} ✓`, "okk");
+    ta.value = "";
     await reload();
   } catch (e) { toast(e.message, "err"); }
 };
@@ -531,6 +694,11 @@ async function refresh() {
   } catch (e) {
     if (String(e.message).includes("ditolak")) location.reload();
   }
+}
+
+async function reload() {
+  await refresh();
+  if (S.tab === "playground") loadPlayModels();
 }
 
 async function loadStatus() {

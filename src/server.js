@@ -116,6 +116,24 @@ export async function startServer(opts = {}) {
 
     if (method === 'POST' && sub === 'keys') {
       const b = JSON.parse(await readBody(req) || '{}');
+      // Bulk: { providerId, keys: [..], label? }
+      if (Array.isArray(b.keys)) {
+        if (!b.providerId) throw new ApiError(400, 'providerId wajib');
+        const results = [];
+        for (const raw of b.keys.slice(0, 200)) {
+          const v = String(raw || '').trim();
+          if (!v) continue;
+          try {
+            const key = config.addKey(b.providerId, v, b.label);
+            results.push({ ok: true, label: key.label });
+          } catch (e) {
+            results.push({ ok: false, key: v.slice(0, 6) + '…', error: e.message });
+          }
+        }
+        const added = results.filter((r) => r.ok).length;
+        if (added === 0 && results.length > 0) throw new ApiError(400, results[0].error || 'Tidak ada key valid');
+        return json(res, 201, { ok: true, added, skipped: results.length - added, results });
+      }
       if (!b.providerId || !b.key) throw new ApiError(400, 'providerId dan key wajib');
       const key = config.addKey(b.providerId, b.key, b.label);
       return json(res, 201, { ok: true, key: sanitizeKey(key) });
@@ -200,6 +218,60 @@ export async function startServer(opts = {}) {
       config.data.gateway.apiKeys = [key];
       config.save();
       return json(res, 200, { ok: true, apiKey: key });
+    }
+
+    // Backup / restore penuh (PERINGATAN: berisi API key asli)
+    if (method === 'GET' && sub === 'config/export') {
+      return json(res, 200, config.data);
+    }
+
+    if (method === 'POST' && sub === 'config/import') {
+      const b = JSON.parse(await readBody(req) || '{}');
+      const c = b.config;
+      if (!c || typeof c !== 'object') throw new ApiError(400, 'Field "config" tidak valid');
+      if (Array.isArray(c.customProviders)) {
+        const ids = new Set(CATALOG.map((p) => p.id));
+        config.data.customProviders = c.customProviders.filter((p) => p && p.id && p.baseUrl && !ids.has(p.id));
+      }
+      if (c.providers && typeof c.providers === 'object') {
+        const clean = {};
+        for (const [id, p] of Object.entries(c.providers)) {
+          if (!p || typeof p !== 'object') continue;
+          clean[id] = {
+            enabled: p.enabled !== false,
+            keys: Array.isArray(p.keys) ? p.keys.filter((k) => k && k.value !== undefined).map((k) => ({
+              id: k.id || 'k_' + crypto.randomBytes(6).toString('hex'),
+              label: k.label || 'key',
+              value: String(k.value || ''),
+              addedAt: k.addedAt || Date.now(),
+              status: k.status === 'dead' ? 'dead' : 'ok',
+              enabled: k.enabled !== false,
+              failCount: 0, success: k.success || 0, fail: k.fail || 0,
+              cooldownUntil: 0,
+            })) : [],
+          };
+        }
+        config.data.providers = clean;
+        // Pastikan provider keyless default tetap ada (tanpa membaca ulang file lama)
+        config.ensureKeylessDefaults();
+      }
+      if (c.settings && typeof c.settings === 'object') {
+        const s = config.data.settings;
+        const inc = c.settings;
+        if (['failover', 'round-robin', 'free-first'].includes(inc.strategy)) s.strategy = inc.strategy;
+        if (Array.isArray(inc.providerOrder)) s.providerOrder = inc.providerOrder.filter((x) => typeof x === 'string');
+        if (Number.isFinite(Number(inc.maxAttempts))) s.maxAttempts = Math.min(Math.max(Number(inc.maxAttempts), 1), 12);
+        if (typeof inc.authRequired === 'boolean') s.authRequired = inc.authRequired;
+        if (typeof inc.allowAnyFallback === 'boolean') s.allowAnyFallback = inc.allowAnyFallback;
+        if (inc.timeouts) {
+          for (const k of ['connectMs', 'firstByteMs', 'totalMs', 'streamIdleMs']) {
+            const v = Number(inc.timeouts[k]);
+            if (Number.isFinite(v)) s.timeouts[k] = Math.min(Math.max(v, 1000), 600000);
+          }
+        }
+      }
+      config.save();
+      return json(res, 200, { ok: true });
     }
 
     return json(res, 404, { error: { message: `Endpoint /api/${sub} tidak ada` } });

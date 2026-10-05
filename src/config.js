@@ -60,6 +60,25 @@ export class Config {
     this.data.customProviders = this.data.customProviders || [];
 
     // Provider keyless default-on
+    this.ensureKeylessDefaults();
+    // Ensure shape for all providers
+    for (const p of Object.values(this.data.providers)) {
+      p.keys = Array.isArray(p.keys) ? p.keys : [];
+      p.enabled = p.enabled !== false;
+      for (const k of p.keys) {
+        k.status = k.status || 'ok';
+        k.failCount = k.failCount || 0;
+        k.success = k.success || 0;
+        k.fail = k.fail || 0;
+        k.enabled = k.enabled !== false;
+      }
+    }
+    this.save();
+    return this;
+  }
+
+  // Pastikan provider keyless (mis. Pollinations) selalu tersedia & aktif.
+  ensureKeylessDefaults() {
     for (const id of DEFAULT_ON) {
       const meta = catalogById(id);
       if (!meta || !meta.keyless) continue;
@@ -82,20 +101,6 @@ export class Config {
         });
       }
     }
-    // Ensure shape for all providers
-    for (const p of Object.values(this.data.providers)) {
-      p.keys = Array.isArray(p.keys) ? p.keys : [];
-      p.enabled = p.enabled !== false;
-      for (const k of p.keys) {
-        k.status = k.status || 'ok';
-        k.failCount = k.failCount || 0;
-        k.success = k.success || 0;
-        k.fail = k.fail || 0;
-        k.enabled = k.enabled !== false;
-      }
-    }
-    this.save();
-    return this;
   }
 
   save() {

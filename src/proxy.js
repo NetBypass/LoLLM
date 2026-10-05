@@ -248,6 +248,7 @@ export async function runAttempt(ctx) {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      ...(ctx.streamHeaders || {}),
     });
     clientRes.socket?.setNoDelay(true);
 
