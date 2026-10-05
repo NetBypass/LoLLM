@@ -13,6 +13,7 @@ Anda sempat sadar.
 | | LoLLM | Router lain |
 |---|---|---|
 | Dashboard + API | **1 port**, path rapih | Port/config terpisah |
+| Dashboard | **React 19 + Tailwind**, responsif (sidebar desktop, bottom-nav mobile) | — |
 | Multi-key per provider | ✅ pool + rotasi LRU + cooldown | Sebagian |
 | Fallback | **0ms antar percobaan**, lintas key → lintas provider | Backoff lambat |
 | Provider gratis | Katalog bawaan, **tempel key langsung jalan** | Setup manual |

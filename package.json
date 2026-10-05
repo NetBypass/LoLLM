@@ -8,7 +8,9 @@
   },
   "main": "src/server.js",
   "scripts": {
-    "start": "node bin/lollm.js"
+    "start": "node bin/lollm.js",
+    "build:web": "cd web && npm run build",
+    "dev:web": "cd web && npm run dev"
   },
   "engines": {
     "node": ">=18.0.0"

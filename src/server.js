@@ -31,13 +31,41 @@ export async function startServer(opts = {}) {
 
   // Session token dashboard (per boot)
   const sessionToken = crypto.randomBytes(24).toString('hex');
-  let dashboardHtml = null;
-  try {
-    dashboardHtml = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8')
-      .replace('__LOLLM_SESSION__', sessionToken)
-      .replace('__LOLLM_VERSION__', VERSION);
-  } catch {
-    dashboardHtml = `<!doctype html><html><body><h1>LoLLM</h1><p>dashboard.html tidak ditemukan.</p></body></html>`;
+  const publicDir = path.resolve(__dirname, '..', 'public');
+  const legacyDashboardFile = path.join(__dirname, 'dashboard.html');
+
+  const MIME = {
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.json': 'application/json',
+    '.woff2': 'font/woff2',
+    '.png': 'image/png',
+    '.ico': 'image/x-icon',
+    '.map': 'application/json',
+  };
+
+  // Dashboard: prioritas build React (public/), fallback dashboard legacy.
+  function serveDashboard(res) {
+    try {
+      let html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8');
+      const inject = `<script>window.__LOLLM__=${JSON.stringify({ session: sessionToken, version: VERSION })};</script>`;
+      html = html.replace('<head>', '<head>' + inject);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(html);
+    } catch {
+      try {
+        const html = fs.readFileSync(legacyDashboardFile, 'utf8')
+          .replaceAll('__LOLLM_SESSION__', sessionToken)
+          .replaceAll('__LOLLM_VERSION__', VERSION);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(html);
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end('<!doctype html><html><body><h1>LoLLM</h1><p>Dashboard tidak ditemukan.</p></body></html>');
+      }
+    }
   }
 
   // ---------- helpers ----------
@@ -334,14 +362,37 @@ export async function startServer(opts = {}) {
 
       if (p === '/healthz') return json(res, 200, { ok: true, version: VERSION, uptimeSec: Math.floor((Date.now() - router.stats.startedAt) / 1000) });
 
+      // Static assets dashboard (nama file hashed → cache immutable)
+      if (p.startsWith('/assets/')) {
+        const rel = path.normalize(p.slice('/assets/'.length)).replace(/^(\.\.[/\\])+/g, '');
+        const file = path.join(publicDir, 'assets', rel);
+        if (!file.startsWith(path.join(publicDir, 'assets') + path.sep) && file !== path.join(publicDir, 'assets')) {
+          return json(res, 404, { error: { message: 'Not found' } });
+        }
+        return fs.readFile(file, (err, data) => {
+          if (err) return json(res, 404, { error: { message: 'Not found' } });
+          const ext = path.extname(file).toLowerCase();
+          res.writeHead(200, {
+            'Content-Type': MIME[ext] || 'application/octet-stream',
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          });
+          res.end(data);
+        });
+      }
+
       // Dashboard
       if (p === '/' || p === '/index.html' || p === '/favicon.ico') {
         if (p === '/favicon.ico') {
           res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
           return res.end(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><text y="26" font-size="26">⚡</text></svg>`);
         }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-        return res.end(dashboardHtml);
+        return serveDashboard(res);
+      }
+
+      // Session dashboard untuk dev mode / re-bootstrap setelah restart
+      // (setara dengan membuka "/" yang menyuntikkan session ke HTML)
+      if (p === '/api/session') {
+        return json(res, 200, { session: sessionToken, version: VERSION });
       }
 
       // API publik
