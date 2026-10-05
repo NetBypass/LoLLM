@@ -1,12 +1,13 @@
 // LoLLM — Router: resolusi model → rantai kandidat (key × provider) → loop fallback 0ms.
+// Daftar model SELALU live dari endpoint provider — tanpa hint/template/dummy.
 
 import { runAttempt, UpstreamError } from './proxy.js';
 import {
   pickKey, reportSuccess, reportFailure, providerUsable, providerHealthy, keySummary,
 } from './pool.js';
-import { MODEL_ALIASES } from './catalog.js';
 
-const MODELS_TTL_MS = 10 * 60 * 1000;
+const MODELS_TTL_MS = 10 * 60 * 1000; // cache daftar model live (sukses)
+const MODELS_EMPTY_TTL_MS = 30 * 1000; // gagal/kosong → coba lagi cepat, jangan pakai data palsu
 const MAX_LOGS = 500;
 
 export class ApiError extends Error {
@@ -70,9 +71,13 @@ export class Router {
   }
 
   // ---- Live model list (cache) ----
+  // Gagal fetch = kosong (cache 30s). Sukses = cache 10 menit. Tidak pernah ada daftar palsu.
   async liveModels(id, pconf, meta) {
     const cached = this.modelsCache.get(id);
-    if (cached && Date.now() - cached.ts < MODELS_TTL_MS) return cached.models;
+    if (cached) {
+      const ttl = cached.models.length ? MODELS_TTL_MS : MODELS_EMPTY_TTL_MS;
+      if (Date.now() - cached.ts < ttl) return cached.models;
+    }
     if (this.inflight.has(id)) return this.inflight.get(id);
 
     const key = pickKey(pconf);
@@ -97,9 +102,9 @@ export class Router {
         this.modelsCache.set(id, { ts: Date.now(), models });
         return models;
       } catch {
-        // Fallback: hint katalog
-        this.modelsCache.set(id, { ts: Date.now(), models: meta.models || [] });
-        return meta.models || [];
+        // Endpoint tidak bisa dihubungi → KOSONG, bukan daftar palsu.
+        this.modelsCache.set(id, { ts: Date.now(), models: [] });
+        return [];
       } finally {
         clearTimeout(timer);
         this.inflight.delete(id);
@@ -109,12 +114,18 @@ export class Router {
     return task;
   }
 
+  // Bust cache daftar model (dipanggil setelah key/provider berubah).
+  invalidateModels(providerId) {
+    if (providerId) this.modelsCache.delete(providerId);
+    else this.modelsCache.clear();
+  }
+
   async allModels() {
     const out = [];
     const seen = new Set();
     for (const p of this.availableProviders()) {
       let models = [];
-      try { models = await this.liveModels(p.id, p.pconf, p.meta); } catch { models = p.meta.models || []; }
+      try { models = await this.liveModels(p.id, p.pconf, p.meta); } catch { /* kosong */ }
       for (const m of models) {
         const k = `${p.id}:${m}`;
         if (!seen.has(k)) { seen.add(k); out.push({ id: m, provider: p.id }); }
@@ -124,18 +135,23 @@ export class Router {
   }
 
   // ---- Resolusi model → targets [{providerId, model}] ----
+  // Semua keputusan memakai daftar model LIVE dari endpoint. Tanpa alias/template.
   async resolveTargets(model) {
     const now = Date.now();
     const avail = this.availableProviders(now);
     if (avail.length === 0) return [];
 
-    // 1) auto
+    // 1) auto → provider sehat pertama yang punya model live, pakai model pertamanya
     if (model === 'auto' || model === 'lollm' || model === 'lollm-auto') {
-      const pick = avail.find((p) => providerHealthy(p.pconf, now)) || avail[0];
-      return [{ providerId: pick.id, model: pick.meta.defaultModel }];
+      for (const p of avail) {
+        if (!providerHealthy(p.pconf, now)) continue;
+        const models = await this.liveModels(p.id, p.pconf, p.meta);
+        if (models.length > 0) return [{ providerId: p.id, model: models[0] }];
+      }
+      return [];
     }
 
-    // 2) Pin provider: "groq/llama-..." atau "groq:llama-..."
+    // 2) Pin provider: "groq/llama-..." — percaya user, langsung pakai
     const pin = model.match(/^([a-z0-9_-]+)[/:](.+)$/i);
     if (pin) {
       const provId = pin[1].toLowerCase();
@@ -144,26 +160,13 @@ export class Router {
       if (p) return [{ providerId: p.id, model: rest }];
     }
 
+    // 3) Model persis ada di daftar live provider (urut prioritas)
     const targets = [];
-    const push = (providerId, m) => {
-      if (!targets.some((t) => t.providerId === providerId)) targets.push({ providerId, model: m });
-    };
-
-    // 3) Alias map
-    for (const target of MODEL_ALIASES[model] || []) {
-      const [provId, m] = target.split(':');
-      if (avail.some((x) => x.id === provId)) push(provId, m);
-    }
-
-    // 4) Model persis ada di provider (live list / hint)
-    const exact = [];
     for (const p of avail) {
-      let models = p.meta.models || [];
-      try { models = await this.liveModels(p.id, p.pconf, p.meta); } catch { /* hint */ }
-      if (models.includes(model)) exact.push(p.id);
+      let models = [];
+      try { models = await this.liveModels(p.id, p.pconf, p.meta); } catch { /* kosong */ }
+      if (models.includes(model)) targets.push({ providerId: p.id, model });
     }
-    for (const id of exact) push(id, model);
-
     return targets;
   }
 
@@ -197,18 +200,21 @@ export class Router {
 
     let plans = await this.resolveTargets(requestedModel);
 
-    // Last resort: provider sehat mana pun + defaultModel
+    // Last resort: provider sehat mana pun + model live pertamanya
     if (settings.allowAnyFallback && path === 'chat/completions') {
       const now = Date.now();
       const already = new Set(plans.map((p) => p.providerId));
       for (const p of this.availableProviders(now)) {
-        if (!already.has(p.id)) plans.push({ providerId: p.id, model: p.meta.defaultModel, anyFallback: true });
+        if (already.has(p.id)) continue;
+        let models = [];
+        try { models = await this.liveModels(p.id, p.pconf, p.meta); } catch { /* kosong */ }
+        if (models.length > 0) plans.push({ providerId: p.id, model: models[0], anyFallback: true });
       }
     }
 
     if (plans.length === 0) {
       const models = (await this.allModels().catch(() => [])).slice(0, 30).map((m) => m.id);
-      return fail(404, `Model "${requestedModel}" tidak ditemukan & tidak ada provider tersedia. Tambahkan API key di dashboard (http://localhost:PORT).`, { available: [...new Set(models)] });
+      return fail(404, `Model "${requestedModel}" tidak tersedia. Daftar model diambil live dari endpoint provider — kosong berarti belum ada API key aktif atau endpoint belum bisa dihubungi. Tambahkan API key di dashboard, lalu cek /v1/models.`, { available: [...new Set(models)] });
     }
 
     // Round-robin: rotasi urutan plans
@@ -289,8 +295,6 @@ export class Router {
               'x-lollm-trail': encodeTrail(trail),
             });
             clientRes.end(result.buffer);
-          } else if (stream && !clientRes.headersSent) {
-            // (seharusnya sudah ditulis oleh proxy saat streaming)
           }
 
           this.pushLog({

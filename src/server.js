@@ -138,6 +138,7 @@ export async function startServer(opts = {}) {
     }
 
     if (method === 'GET' && sub === 'models') {
+      if (url.searchParams.get('refresh')) router.invalidateModels();
       const models = await router.allModels();
       return json(res, 200, { models });
     }
@@ -160,10 +161,12 @@ export async function startServer(opts = {}) {
         }
         const added = results.filter((r) => r.ok).length;
         if (added === 0 && results.length > 0) throw new ApiError(400, results[0].error || 'Tidak ada key valid');
+        router.invalidateModels(b.providerId);
         return json(res, 201, { ok: true, added, skipped: results.length - added, results });
       }
       if (!b.providerId || !b.key) throw new ApiError(400, 'providerId dan key wajib');
       const key = config.addKey(b.providerId, b.key, b.label);
+      router.invalidateModels(b.providerId);
       return json(res, 201, { ok: true, key: sanitizeKey(key) });
     }
 
@@ -172,6 +175,7 @@ export async function startServer(opts = {}) {
       const key = config.findKey(b.providerId, b.keyId);
       const meta = config.providerMeta(b.providerId);
       if (!key || !meta) throw new ApiError(404, 'Key/provider tidak ditemukan');
+      router.invalidateModels(b.providerId);
       const result = await testKey(meta, key);
       if (result.ok && key.status === 'dead') { key.status = 'ok'; key.cooldownUntil = 0; config.save(); }
       if (result.ok && key.cooldownUntil) { key.cooldownUntil = 0; config.save(); }
@@ -184,6 +188,7 @@ export async function startServer(opts = {}) {
       if (!key) throw new ApiError(404, 'Key tidak ditemukan');
       key.enabled = b.enabled !== false;
       config.save();
+      router.invalidateModels(b.providerId);
       return json(res, 200, { ok: true });
     }
 
@@ -191,6 +196,7 @@ export async function startServer(opts = {}) {
       const b = JSON.parse(await readBody(req) || '{}');
       const ok = config.removeKey(b.providerId, b.keyId);
       if (!ok) throw new ApiError(404, 'Key tidak ditemukan');
+      router.invalidateModels(b.providerId);
       return json(res, 200, { ok: true });
     }
 
@@ -199,6 +205,7 @@ export async function startServer(opts = {}) {
       const p = config.ensureProvider(b.providerId);
       p.enabled = b.enabled !== false;
       config.save();
+      router.invalidateModels(b.providerId);
       return json(res, 200, { ok: true });
     }
 
@@ -220,6 +227,7 @@ export async function startServer(opts = {}) {
       else config.data.customProviders.push(entry);
       config.ensureProvider(id);
       config.save();
+      router.invalidateModels();
       return json(res, 201, { ok: true, provider: entry });
     }
 
@@ -299,6 +307,7 @@ export async function startServer(opts = {}) {
         }
       }
       config.save();
+      router.invalidateModels();
       return json(res, 200, { ok: true });
     }
 

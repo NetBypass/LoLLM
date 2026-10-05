@@ -100,7 +100,7 @@ client → POST /v1/chat/completions  (model: "llama-3.3-70b")
 - **429** → key cooldown sesuai `retry-after`, request lanjut ke key lain — tanpa menunggu.
 - **401/403** → key ditandai mati (hidup lagi lewat tombol Test), lanjut.
 - **Timeout / 5xx / network** → lanjut ke kandidat berikutnya.
-- **Model sama di provider lain** → otomatis dicoba (alias bawaan, mis. `llama-3.3-70b` → Groq ⭢ Cerebras).
+- **Model sama di provider lain** → otomatis dicoba, dicocokkan dengan **daftar model live** dari endpoint masing-masing.
 - **Last resort** (opsional, default ON): kalau semua kandidat model tsb habis, provider sehat mana pun dipakai —
   model aktual dilaporkan di header `x-lollm-model`.
 
@@ -132,6 +132,13 @@ OpenAI-compatible penuh di `/v1` (chat/completions, completions, embeddings, mod
 Bonus header observabilitas pada setiap response: `x-lollm-provider`, `x-lollm-model`, `x-lollm-trail`
 (jejak fallback). Model spesial `auto` memilih provider sehat terbaik otomatis.
 Format `provider/model` (mis. `groq/llama-3.3-70b-versatile`) mem-pin provider.
+
+### Daftar model selalu live — tanpa template/dummy
+
+LoLLM **tidak menyimpan daftar model hardcode**. `/v1/models` kosong sampai ada API key aktif,
+lalu terisi **langsung dari endpoint provider** (di-cache 10 menit; gagal fetch = kosong, coba lagi 30s —
+tidak pernah ada daftar palsu). Resolusi model (`auto`, pencocokan nama, last-resort) juga hanya
+memakai daftar live. Setiap perubahan key/provider otomatis mem-bust cache (`/api/models?refresh=1` untuk paksa).
 
 ## License
 

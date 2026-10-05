@@ -63,15 +63,14 @@ function KeyRow({ pid, k, onAction }) {
   );
 }
 
-function ProviderCard({ p, conf, actions }) {
+function ProviderCard({ p, conf, actions, liveAll }) {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [keyVal, setKeyVal] = useState('');
   const [label, setLabel] = useState('');
   const [bulkVal, setBulkVal] = useState('');
   const [adding, setAdding] = useState(false);
   const keys = conf?.keys || [];
-  const models = p.models || [];
-  const shown = models.slice(0, 4);
+  const live = (liveAll || []).filter((m) => m.provider === p.id).map((m) => m.id);
 
   async function add() {
     if (!keyVal.trim()) return actions.toast('Key-nya kosong dulu, dewa 🙏', 'err');
@@ -88,7 +87,8 @@ function ProviderCard({ p, conf, actions }) {
       const r = await api('keys', { method: 'POST', body: { providerId: p.id, keys: list } });
       actions.toast(`${r.added} key masuk pool${r.skipped ? ' · ' + r.skipped + ' dilewati' : ''} ✓`, 'okk');
       setBulkVal(''); setBulkOpen(false);
-      actions.reload();
+      await actions.reload();
+      actions.refreshModels(true);
     } catch (e) { actions.toast(e.message, 'err'); }
   }
 
@@ -109,13 +109,20 @@ function ProviderCard({ p, conf, actions }) {
         </div>
       </div>
       {p.note && <p className="text-[12.5px] text-mist-500 mt-2.5 leading-relaxed">{p.note}</p>}
-      {shown.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mt-3">
-          {shown.map((m) => (
-            <span key={m} className="font-mono text-[11px] text-neon-400/90 bg-neon-400/[0.07] border border-neon-400/15 rounded-md px-2 py-0.5">{m}</span>
+      {live.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5 mt-3">
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-emerald-300 mr-0.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> LIVE · {live.length}
+          </span>
+          {live.slice(0, 5).map((m) => (
+            <span key={m} title={m} className="font-mono text-[11px] text-neon-400/90 bg-neon-400/[0.07] border border-neon-400/15 rounded-md px-2 py-0.5 max-w-[200px] truncate">{m}</span>
           ))}
-          {models.length > shown.length && <span className="font-mono text-[11px] text-mist-500 px-1.5 py-0.5">+{models.length - shown.length} lagi</span>}
+          {live.length > 5 && <span className="font-mono text-[11px] text-mist-500 px-1 py-0.5">+{live.length - 5} lagi</span>}
         </div>
+      ) : keys.length > 0 ? (
+        <p className="text-[11px] text-mist-500 mt-3">Daftar model belum bisa diambil dari endpoint — cek key/koneksi lalu muat ulang halaman.</p>
+      ) : (
+        <p className="text-[11px] text-mist-500/70 mt-3">Model list kosong — terisi otomatis (live dari endpoint) setelah API key ditambahkan.</p>
       )}
 
       <div className="mt-4 space-y-2">
@@ -148,7 +155,7 @@ function ProviderCard({ p, conf, actions }) {
 }
 
 export default function Providers() {
-  const { boot, status, toast, reload } = useStore();
+  const { boot, status, toast, reload, models, refreshModels } = useStore();
   const [q, setQ] = useState('');
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
@@ -158,9 +165,14 @@ export default function Providers() {
     toast,
     reload,
     addKey: async (pid, key, label) => {
-      try { await api('keys', { method: 'POST', body: { providerId: pid, key, label } }); toast('Key masuk pool ✓', 'okk'); await reload(); }
-      catch (e) { throw e; }
+      try {
+        await api('keys', { method: 'POST', body: { providerId: pid, key, label } });
+        toast('Key masuk pool ✓', 'okk');
+        await reload();
+        refreshModels(true);
+      } catch (e) { throw e; }
     },
+    refreshModels,
     delKey: async (pid, kid) => {
       try { await api('keys', { method: 'DELETE', body: { providerId: pid, keyId: kid } }); toast('Key dihapus'); await reload(); }
       catch (e) { toast(e.message, 'err'); }
@@ -212,7 +224,7 @@ export default function Providers() {
           <section key={tier}>
             <SectionTitle icon={tier === 'custom' ? KeyRound : Zap} hint={desc}>{title}</SectionTitle>
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
-              {list.map((p) => <ProviderCard key={p.id} p={p} conf={boot?.providers?.[p.id]} actions={actions} />)}
+              {list.map((p) => <ProviderCard key={p.id} p={p} conf={boot?.providers?.[p.id]} actions={actions} liveAll={models} />)}
             </div>
           </section>
         );

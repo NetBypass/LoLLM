@@ -80,6 +80,9 @@ export default function Playground() {
             <input className="field field-mono" list="pg-models" value={model} onChange={(e) => setModel(e.target.value)} placeholder="auto" />
             <datalist id="pg-models">{opts.map((m) => <option key={m} value={m} />)}</datalist>
             <p className="text-[11px] text-mist-500/80 mt-1.5">auto = provider sehat terbaik · provider/model = pin</p>
+            {(!models || models.length === 0) && (
+              <p className="text-[11px] text-amber-300/80 mt-1">Belum ada model live — daftar muncul otomatis setelah API key ditambahkan di tab Providers.</p>
+            )}
           </div>
           <div>
             <label className="block text-xs text-mist-500 mb-1.5">System prompt (opsional)</label>

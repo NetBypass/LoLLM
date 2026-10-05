@@ -30,8 +30,8 @@ export function StoreProvider({ children }) {
   const refreshLogs = useCallback(async () => {
     try { setLogs((await api('logs?limit=150')).logs); } catch { /* silent */ }
   }, []);
-  const refreshModels = useCallback(async () => {
-    try { setModels((await api('models')).models); } catch { /* silent */ }
+  const refreshModels = useCallback(async (refresh = false) => {
+    try { setModels((await api('models' + (refresh ? '?refresh=1' : ''))).models); } catch { /* silent */ }
   }, []);
   const reload = useCallback(async () => {
     await Promise.all([refreshBoot(), refreshStatus()]);
@@ -51,7 +51,7 @@ export function StoreProvider({ children }) {
   useEffect(() => { const t = setInterval(refreshLogs, 4000); return () => clearInterval(t); }, [refreshLogs]);
 
   // Model list untuk playground (lazy)
-  useEffect(() => { if (tab === 'playground' && models === null) refreshModels(); }, [tab, models, refreshModels]);
+  useEffect(() => { if ((tab === 'playground' || tab === 'providers') && models === null) refreshModels(); }, [tab, models, refreshModels]);
 
   return (
     <Ctx.Provider value={{ tab, go, boot, status, logs, models, toasts, toast, reload, refreshBoot, refreshStatus, refreshLogs, refreshModels }}>
