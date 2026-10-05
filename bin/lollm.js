@@ -28,7 +28,7 @@ if (args.version) {
 }
 
 if (args.help) {
-  console.log(`⚡ LoLLM — Local LLM Gateway v${VERSION}
+  console.log(`LoLLM — Local LLM Gateway v${VERSION}
 
 Pemakaian:
   lollm [opsi]
@@ -53,7 +53,7 @@ const { server, port, host } = await startServer(args);
 const hostLabel = host === '0.0.0.0' ? 'localhost' : host;
 
 console.log(`
-⚡ LoLLM Gateway v${VERSION}
+LoLLM Gateway v${VERSION}
    Dashboard : http://${hostLabel}:${port}
    API       : http://${hostLabel}:${port}/v1   (OpenAI-compatible)
    Health    : http://${hostLabel}:${port}/healthz
@@ -63,7 +63,7 @@ console.log(`
 `);
 
 const shutdown = () => {
-  console.log('\n⚡ LoLLM berhenti.');
+  console.log('\nLoLLM berhenti.');
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500).unref();
 };

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import clsx from 'clsx';
-import { ArrowDown, ArrowUp, Download, KeyRound, RefreshCw, Route as RouteIcon, Save, Timer, Upload } from 'lucide-react';
+import { ArrowDown, ArrowUp, Download, Route as RouteIcon, Save, Timer, Upload } from 'lucide-react';
 import { useStore } from '../store.jsx';
 import { api } from '../api.js';
-import { Btn, Card, ConfirmBtn, CopyBtn, SectionTitle, Toggle } from '../components/ui.jsx';
+import { Btn, Card, SectionTitle, Toggle } from '../components/ui.jsx';
 
 const STRATEGIES = [
   { id: 'failover', title: 'Failover', desc: 'Urutan prioritas; key & provider berikutnya dicoba instan saat gagal.' },
@@ -78,11 +78,6 @@ export default function Routing() {
     setSaving(false);
   }
 
-  async function rotate() {
-    try { await api('gateway/rotate', { method: 'POST' }); toast('Gateway key baru dibuat ✓', 'okk'); await reload(); }
-    catch (e) { toast(e.message, 'err'); }
-  }
-
   async function exportCfg() {
     try {
       const c = await api('config/export');
@@ -110,8 +105,6 @@ export default function Routing() {
     r.readAsText(file);
     if (ev) ev.target.value = '';
   }
-
-  const gwKey = (boot?.gatewayKeys || [])[0] || '-';
 
   return (
     <div className="space-y-8">
@@ -202,18 +195,6 @@ export default function Routing() {
                 </div>
               );
             })}
-        </Card>
-      </section>
-
-      <section>
-        <SectionTitle icon={KeyRound}>Gateway API key</SectionTitle>
-        <Card className="p-5">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <code className="text-xs font-mono bg-ink-800 border border-white/[0.08] rounded-lg px-3 py-2 text-mist-300 select-all break-all">{gwKey}</code>
-            <CopyBtn text={gwKey} label="Salin" />
-            <ConfirmBtn onConfirm={rotate} className="!text-red-300"><RefreshCw size={12} /> Rotate</ConfirmBtn>
-          </div>
-          <p className="text-[11.5px] text-mist-500 mt-3">Dipakai client sebagai <code className="font-mono">Authorization: Bearer …</code> menuju /v1. Rotate membatalkan key lama.</p>
         </Card>
       </section>
 

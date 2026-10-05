@@ -1,15 +1,15 @@
 import { useMemo, useState } from 'react';
 import clsx from 'clsx';
-import { Beaker, ChevronDown, ExternalLink, KeyRound, Loader2, Plus, Search, Trash2, Zap } from 'lucide-react';
+import { AlertTriangle, Beaker, Check, ChevronDown, Coins, CreditCard, ExternalLink, Gift, KeyRound, Loader2, Plus, Search, Trash2, Wrench, X } from 'lucide-react';
 import { useStore } from '../store.jsx';
 import { api } from '../api.js';
 import { Btn, Card, ConfirmBtn, Dot, Empty, SectionTitle, TierBadge, Toggle } from '../components/ui.jsx';
 
 const GROUPS = [
-  ['free', '🆓 Provider gratis', 'tempel API key, langsung jalan — tanpa setup apa pun'],
-  ['freemium', '🟡 Freemium', 'kredit trial / kuota terbatas'],
-  ['paid', '💸 Berbayar', 'provider utama (opsional)'],
-  ['custom', '🛠 Custom', 'provider OpenAI-compatible milikmu sendiri'],
+  ['free', 'Provider gratis', 'tempel API key, langsung jalan — tanpa setup apa pun', Gift],
+  ['freemium', 'Freemium', 'kredit trial / kuota terbatas', Coins],
+  ['paid', 'Berbayar', 'provider utama (opsional)', CreditCard],
+  ['custom', 'Custom', 'provider OpenAI-compatible milikmu sendiri', Wrench],
 ];
 
 function keyState(k) {
@@ -42,9 +42,10 @@ function KeyRow({ pid, k, onAction }) {
       <button className="font-mono text-[11.5px] text-mist-500 hover:text-neon-400 cursor-pointer transition-colors" onClick={() => setReveal(!reveal)} title="Klik untuk lihat/sembunyikan">
         {masked}
       </button>
-      <span className="font-mono text-[11px] text-mist-500">
-        ✓{k.success || 0} ✕{k.fail || 0}
-        {k.lastError && <span title={k.lastError} className="ml-1 text-amber-400 cursor-help">⚠</span>}
+      <span className="flex items-center gap-2 font-mono text-[11px] text-mist-500">
+        <span className="flex items-center gap-0.5 text-emerald-400" title="sukses"><Check size={11} />{k.success || 0}</span>
+        <span className="flex items-center gap-0.5 text-red-400" title="gagal"><X size={11} />{k.fail || 0}</span>
+        {k.lastError && <AlertTriangle size={11} className="text-amber-400 cursor-help" title={k.lastError} />}
       </span>
       <div className="ml-auto flex items-center gap-1.5">
         <Btn size="sm" onClick={test} disabled={testing}>
@@ -63,7 +64,7 @@ function KeyRow({ pid, k, onAction }) {
   );
 }
 
-function ProviderCard({ p, conf, actions, liveAll }) {
+function ProviderCard({ p, conf, actions, liveAll, idx = 0 }) {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [keyVal, setKeyVal] = useState('');
   const [label, setLabel] = useState('');
@@ -85,7 +86,7 @@ function ProviderCard({ p, conf, actions, liveAll }) {
     if (!list.length) return actions.toast('Tidak ada key yang terbaca', 'err');
     try {
       const r = await api('keys', { method: 'POST', body: { providerId: p.id, keys: list } });
-      actions.toast(`${r.added} key masuk pool${r.skipped ? ' · ' + r.skipped + ' dilewati' : ''} ✓`, 'okk');
+      actions.toast(`${r.added} key masuk pool${r.skipped ? ' · ' + r.skipped + ' dilewati' : ''}`, 'okk');
       setBulkVal(''); setBulkOpen(false);
       await actions.reload();
       actions.refreshModels(true);
@@ -93,7 +94,7 @@ function ProviderCard({ p, conf, actions, liveAll }) {
   }
 
   return (
-    <Card className="p-5">
+    <Card className="p-5 animate-[pop_.3s_ease_both]" style={{ animationDelay: `${Math.min(idx, 8) * 35}ms` }}>
       <div className="flex flex-wrap items-center gap-2.5">
         <span className="font-bold text-white text-[15px]">{p.name}</span>
         <TierBadge tier={p.tier} />
@@ -167,7 +168,7 @@ export default function Providers() {
     addKey: async (pid, key, label) => {
       try {
         await api('keys', { method: 'POST', body: { providerId: pid, key, label } });
-        toast('Key masuk pool ✓', 'okk');
+        toast('Key masuk pool', 'okk');
         await reload();
         refreshModels(true);
       } catch (e) { throw e; }
@@ -201,7 +202,7 @@ export default function Providers() {
     if (!name.trim() || !url.trim()) return toast('Nama & base URL wajib', 'err');
     try {
       await api('providers/custom', { method: 'POST', body: { name: name.trim(), baseUrl: url.trim(), style } });
-      toast('Provider custom dibuat ✓', 'okk');
+      toast('Provider custom dibuat', 'okk');
       setName(''); setUrl('');
       await reload();
     } catch (e) { toast(e.message, 'err'); }
@@ -217,14 +218,14 @@ export default function Providers() {
         <span className="text-xs text-mist-500">{filtered.length} provider</span>
       </div>
 
-      {GROUPS.map(([tier, title, desc]) => {
+      {GROUPS.map(([tier, title, desc, Icon]) => {
         const list = filtered.filter((p) => p.tier === tier);
         if (!list.length) return null;
         return (
           <section key={tier}>
-            <SectionTitle icon={tier === 'custom' ? KeyRound : Zap} hint={desc}>{title}</SectionTitle>
+            <SectionTitle icon={Icon} hint={desc}>{title}</SectionTitle>
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
-              {list.map((p) => <ProviderCard key={p.id} p={p} conf={boot?.providers?.[p.id]} actions={actions} liveAll={models} />)}
+              {list.map((p, i) => <ProviderCard key={p.id} p={p} conf={boot?.providers?.[p.id]} actions={actions} liveAll={models} idx={i} />)}
             </div>
           </section>
         );

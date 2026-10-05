@@ -1,14 +1,15 @@
 import { Activity, ArrowLeftRight, Coins, Gauge, KeyRound, Terminal, Zap, ShieldCheck } from 'lucide-react';
 import { useStore } from '../store.jsx';
 import { fmtMs, fmtNum } from '../api.js';
-import { Card, CopyBtn, Dot, SectionTitle, Sparkline, TierBadge } from '../components/ui.jsx';
+import { Card, CopyBtn, Dot, KeyCounts, SectionTitle, Sparkline, TierBadge, useCountUp } from '../components/ui.jsx';
 
-function Stat({ icon: Icon, label, value, sub, spark }) {
+function Stat({ icon: Icon, label, value, sub, spark, countTo, fmt }) {
+  const n = useCountUp(typeof countTo === 'number' ? countTo : 0);
   return (
-    <Card className="p-4 overflow-hidden relative">
+    <Card className="p-4 overflow-hidden relative transition-all duration-300 hover:-translate-y-0.5 hover:border-white/[0.14]">
       <div className="flex items-start justify-between">
         <div>
-          <div className="text-[22px] font-bold text-white font-mono leading-tight">{value}</div>
+          <div className="text-[22px] font-bold text-white font-mono leading-tight">{countTo != null ? (fmt ? fmt(n) : n) : value}</div>
           <div className="text-[11px] text-mist-500 mt-1">{label}</div>
         </div>
         <div className="w-8 h-8 rounded-lg bg-white/[0.05] border border-white/[0.06] flex items-center justify-center">
@@ -37,12 +38,12 @@ export default function Overview() {
   -d '{"model":"auto","messages":[{"role":"user","content":"halo!"}]}'`;
 
   const stats = [
-    { icon: Activity, label: 'Requests', value: fmtNum(st.requests), sub: `${fmtNum(st.ok)} sukses · ${fmtNum(st.fail)} gagal`, spark },
-    { icon: Gauge, label: 'Tingkat sukses', value: okRate + '%', sub: 'fallback tak terasa ✨' },
+    { icon: Activity, label: 'Requests', value: fmtNum(st.requests), countTo: st.requests, fmt: fmtNum, sub: `${fmtNum(st.ok)} sukses · ${fmtNum(st.fail)} gagal`, spark },
+    { icon: Gauge, label: 'Tingkat sukses', value: okRate + '%', countTo: okRate, fmt: (v) => v + '%', sub: 'fallback tak terasa' },
     { icon: Gauge, label: 'Latensi rata²', value: fmtMs(avg), sub: 'first hit per request' },
-    { icon: ArrowLeftRight, label: 'Perpindahan fallback', value: fmtNum(st.fallbacks), sub: 'lintas key & provider' },
+    { icon: ArrowLeftRight, label: 'Perpindahan fallback', value: fmtNum(st.fallbacks), countTo: st.fallbacks, fmt: fmtNum, sub: 'lintas key & provider' },
     { icon: Coins, label: 'Token', value: fmtNum(st.tokensIn) + '→' + fmtNum(st.tokensOut), sub: 'masuk → keluar' },
-    { icon: KeyRound, label: 'Key sehat', value: health.reduce((a, p) => a + (p.keys?.ok || 0), 0), sub: `${health.filter((p) => p.state === 'up').length} provider aktif` },
+    { icon: KeyRound, label: 'Key sehat', value: health.reduce((a, p) => a + (p.keys?.ok || 0), 0), countTo: health.reduce((a, p) => a + (p.keys?.ok || 0), 0), fmt: (v) => v, sub: `${health.filter((p) => p.state === 'up').length} provider aktif` },
   ];
 
   return (
@@ -51,7 +52,7 @@ export default function Overview() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight">
-            Gateway <span className="gtext">siap tempur</span> ⚡
+            Gateway <span className="gtext">siap tempur</span>
           </h1>
           <p className="text-sm text-mist-500 mt-1">Satu port untuk semua model — pool key, fallback kilat, provider gratis.</p>
         </div>
@@ -85,12 +86,9 @@ export default function Overview() {
                     <TierBadge tier={p.tier} />
                     <span className="ml-auto text-[10px] font-mono text-mist-500 uppercase">{p.state}</span>
                   </div>
-                  <div className="mt-3 flex items-center gap-3 text-[11px] text-mist-500 font-mono">
-                    <span className="text-emerald-400">✓{k.ok}</span>
-                    <span className="text-amber-400">⏳{k.cooling}</span>
-                    <span className="text-red-400">✕{k.dead}</span>
-                    {k.disabled > 0 && <span className="text-mist-500">⊘{k.disabled}</span>}
-                    <span className="ml-auto truncate max-w-[45%] text-mist-500/70">{p.baseUrl?.replace(/^https?:\/\//, '')}</span>
+                  <div className="mt-3 flex items-center gap-3 text-[11px] text-mist-500">
+                    <KeyCounts k={k} />
+                    <span className="ml-auto truncate max-w-[45%] font-mono text-mist-500/70">{p.baseUrl?.replace(/^https?:\/\//, '')}</span>
                   </div>
                 </Card>
               );

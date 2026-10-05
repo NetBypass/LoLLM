@@ -27,8 +27,9 @@ git clone https://github.com/NetBypass/LoLLM && cd LoLLM
 node bin/lollm.js            # atau: npm start
 ```
 
-Buka `http://localhost:5151` → dashboard aktif. Provider **Pollinations** (keyless, gratis)
-sudah aktif otomatis, jadi API langsung bisa dipakai tanpa setup apa pun:
+Buka `http://localhost:5151` → **masuk dengan password default `Edoll123`** (ganti di tab
+Admin setelah masuk). Provider **Pollinations** (keyless, gratis) sudah aktif otomatis, jadi API
+langsung bisa dipakai tanpa setup apa pun:
 
 ```bash
 curl http://localhost:5151/v1/chat/completions \
@@ -52,10 +53,12 @@ http://localhost:5151
 │   ├── POST /embeddings
 │   └── GET  /models
 └── /api                     Admin API (untuk dashboard)
+    ├── POST /login                                (password dashboard)
     ├── GET  /bootstrap · /status · /logs · /models
     ├── POST /keys (single & bulk) · /keys/test · /keys/toggle
     ├── POST /providers/toggle · /providers/custom
     ├── PUT  /settings · POST /gateway/rotate
+    ├── PUT  /dashboard · POST /dashboard/password · POST /stats/reset
     ├── GET  /config/export · POST /config/import   (backup penuh)
     └── POST /logs/clear
 ```
@@ -65,6 +68,33 @@ http://localhost:5151
 Tab **Playground** di dashboard: chat langsung via `/v1` (streaming) — lihat provider mana yang
 menjawab, latensinya, dan **jejak fallback live** di bawah tiap jawaban. Multi-turn, system prompt,
 dan autocomplete daftar model.
+
+## 🔐 Akses dashboard
+
+Dashboard **terkunci password** secara default (password default: `Edoll123`, disimpan sebagai
+hash SHA-256 di `data/config.json`). Kelola di tab **Admin**:
+
+- Ganti password (verifikasi password lama, min. 6 karakter)
+- Aktif/nonaktif panel login (saat nonaktif, dashboard terbuka langsung)
+- Rotate gateway API key + reset statistik
+- Login dibatasi 10 percobaan/menit per IP (anti brute-force)
+
+## 🎨 Dashboard (React)
+
+UI dashboard dibangun dengan **React 19 + Vite + Tailwind CSS v4** — modern, responsif
+(sidebar di desktop, bottom-nav di mobile), dark-mode dengan aksen gradien, ikon **lucide**,
+dan animasi halus (transisi halaman, stagger kartu, count-up statistik, shake pada error login).
+
+- Source: `web/` · Build hasil (sudah di-commit): `public/`
+- Gateway tetap **zero-dependency**: `node bin/lollm.js` langsung serve build yang ada, tanpa npm
+- Ikut mengembangkan UI:
+
+```bash
+cd web && npm install
+npm run dev        # vite di :5173, proxy /api & /v1 ke gateway :5151
+npm run build      # rebuild ke ../public
+npm test           # audit identifier + SSR render semua halaman
+```
 
 ## 🔑 Katalog provider bawaan
 

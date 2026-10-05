@@ -32,7 +32,7 @@ export async function startServer(opts = {}) {
   // Session token dashboard (per boot)
   const sessionToken = crypto.randomBytes(24).toString('hex');
   const publicDir = path.resolve(__dirname, '..', 'public');
-  const legacyDashboardFile = path.join(__dirname, 'dashboard.html');
+  const loginAttempts = new Map(); // ip → { count, resetAt } — throttle login
 
   const MIME = {
     '.js': 'text/javascript; charset=utf-8',
@@ -46,25 +46,23 @@ export async function startServer(opts = {}) {
     '.map': 'application/json',
   };
 
-  // Dashboard: prioritas build React (public/), fallback dashboard legacy.
+  // Dashboard: serve build React (public/) + inject status login/sesi per boot.
   function serveDashboard(res) {
     try {
       let html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8');
-      const inject = `<script>window.__LOLLM__=${JSON.stringify({ session: sessionToken, version: VERSION })};</script>`;
+      const loginEnabled = config.data.dashboard.loginEnabled !== false;
+      const inject = `<script>window.__LOLLM__=${JSON.stringify({
+        version: VERSION,
+        loginRequired: loginEnabled,
+        session: loginEnabled ? null : sessionToken,
+        defaultPassword: config.isDefaultDashboardPassword(),
+      })};</script>`;
       html = html.replace('<head>', '<head>' + inject);
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(html);
     } catch {
-      try {
-        const html = fs.readFileSync(legacyDashboardFile, 'utf8')
-          .replaceAll('__LOLLM_SESSION__', sessionToken)
-          .replaceAll('__LOLLM_VERSION__', VERSION);
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-        return res.end(html);
-      } catch {
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        return res.end('<!doctype html><html><body><h1>LoLLM</h1><p>Dashboard tidak ditemukan.</p></body></html>');
-      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end('<!doctype html><html><head><title>LoLLM</title></head><body style="font-family:system-ui;background:#0b0f17;color:#e7ecf5;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:20px;margin:0 0 8px">LoLLM Gateway</h1><p style="color:#8b98ad;font-size:14px;margin:0">Build dashboard tidak ditemukan. Jalankan <code>npm run build:web</code>.</p></div></body></html>');
     }
   }
 
@@ -114,6 +112,10 @@ export async function startServer(opts = {}) {
         providers,
         settings: config.data.settings,
         gatewayKeys: config.data.gateway.apiKeys,
+        dashboard: {
+          loginEnabled: config.data.dashboard.loginEnabled !== false,
+          defaultPassword: config.isDefaultDashboardPassword(),
+        },
       });
     }
 
@@ -311,6 +313,36 @@ export async function startServer(opts = {}) {
       return json(res, 200, { ok: true });
     }
 
+    // ---- Admin: dashboard & statistik ----
+    if (method === 'PUT' && sub === 'dashboard') {
+      const b = JSON.parse(await readBody(req) || '{}');
+      if (typeof b.loginEnabled === 'boolean') {
+        config.data.dashboard.loginEnabled = b.loginEnabled;
+        config.save();
+      }
+      return json(res, 200, {
+        ok: true,
+        dashboard: {
+          loginEnabled: config.data.dashboard.loginEnabled !== false,
+          defaultPassword: config.isDefaultDashboardPassword(),
+        },
+      });
+    }
+
+    if (method === 'POST' && sub === 'dashboard/password') {
+      const b = JSON.parse(await readBody(req) || '{}');
+      if (!config.verifyDashboardPassword(b.current)) throw new ApiError(401, 'Password saat ini salah');
+      const next = String(b.next || '');
+      if (next.length < 6) throw new ApiError(400, 'Password baru minimal 6 karakter');
+      config.setDashboardPassword(next);
+      return json(res, 200, { ok: true });
+    }
+
+    if (method === 'POST' && sub === 'stats/reset') {
+      router.stats = router.emptyStats();
+      return json(res, 200, { ok: true });
+    }
+
     return json(res, 404, { error: { message: `Endpoint /api/${sub} tidak ada` } });
   }
 
@@ -392,16 +424,37 @@ export async function startServer(opts = {}) {
       // Dashboard
       if (p === '/' || p === '/index.html' || p === '/favicon.ico') {
         if (p === '/favicon.ico') {
-          res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
-          return res.end(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><text y="26" font-size="26">⚡</text></svg>`);
+          res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' });
+          return res.end(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#00d4ff"/></linearGradient></defs><rect width="24" height="24" rx="6" fill="#0b0f17"/><path fill="url(#g)" d="M13 2 4.5 13.5h5.2L10 22l8.5-11.5h-5.2L13 2z"/></svg>`);
         }
         return serveDashboard(res);
       }
 
-      // Session dashboard untuk dev mode / re-bootstrap setelah restart
-      // (setara dengan membuka "/" yang menyuntikkan session ke HTML)
+      // Session untuk dev mode / re-bootstrap setelah restart.
+      // Saat login dashboard aktif, session HANYA diberikan lewat POST /api/login.
       if (p === '/api/session') {
+        if (config.data.dashboard.loginEnabled !== false) {
+          return json(res, 401, { error: { message: 'Login dashboard diperlukan', loginRequired: true } });
+        }
         return json(res, 200, { session: sessionToken, version: VERSION });
+      }
+
+      // Login dashboard — throttle 10 percobaan/menit per IP
+      if (p === '/api/login' && req.method === 'POST') {
+        const ip = req.socket.remoteAddress || '?';
+        const now = Date.now();
+        const rec = loginAttempts.get(ip);
+        if (rec && rec.count >= 10 && now < rec.resetAt) {
+          return json(res, 429, { error: { message: 'Terlalu banyak percobaan login. Tunggu sebentar.' } });
+        }
+        let b = {};
+        try { b = JSON.parse(await readBody(req) || '{}'); } catch { /* body kosong */ }
+        if (config.verifyDashboardPassword(b.password)) {
+          loginAttempts.delete(ip);
+          return json(res, 200, { ok: true, session: sessionToken });
+        }
+        loginAttempts.set(ip, { count: (rec && now < rec.resetAt ? rec.count : 0) + 1, resetAt: now + 60_000 });
+        return json(res, 401, { error: { message: 'Password salah', wrongPassword: true } });
       }
 
       // API publik

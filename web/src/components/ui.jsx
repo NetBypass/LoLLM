@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import clsx from 'clsx';
-import { Check, Copy } from 'lucide-react';
+import { Ban, Check, Clock3, Copy, X } from 'lucide-react';
 
 export function Btn({ variant = 'default', size = 'md', className, ...props }) {
   return (
@@ -103,6 +103,34 @@ export function ConfirmBtn({ onConfirm, children, ...props }) {
     <Btn size="sm" variant={armed ? 'danger' : 'default'} onClick={() => { if (armed) { setArmed(false); onConfirm(); } else setArmed(true); }} {...props}>
       {armed ? 'Yakin?' : children}
     </Btn>
+  );
+}
+
+export function useCountUp(target, duration = 650) {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    if (!target) { setV(0); return; }
+    let raf;
+    const t0 = performance.now();
+    const step = (t) => {
+      const p = Math.min(1, (t - t0) / duration);
+      setV(Math.round(target * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+  return v;
+}
+
+export function KeyCounts({ k, className }) {
+  return (
+    <span className={clsx('flex items-center gap-2.5 font-mono text-[11px]', className)}>
+      <span className="flex items-center gap-0.5 text-emerald-400" title="key sehat"><Check size={11} />{k.ok}</span>
+      {k.cooling > 0 && <span className="flex items-center gap-0.5 text-amber-400" title="cooldown"><Clock3 size={11} />{k.cooling}</span>}
+      {k.dead > 0 && <span className="flex items-center gap-0.5 text-red-400" title="mati (401/403)"><X size={11} />{k.dead}</span>}
+      {k.disabled > 0 && <span className="flex items-center gap-0.5 text-mist-500" title="dinonaktifkan"><Ban size={11} />{k.disabled}</span>}
+    </span>
   );
 }
 

@@ -23,6 +23,12 @@ export function newGatewayKey() {
   return 'lollm-' + crypto.randomBytes(20).toString('hex');
 }
 
+function sha256(s) {
+  return crypto.createHash('sha256').update(String(s)).digest('hex');
+}
+
+export const DEFAULT_DASHBOARD_PASSWORD = 'Edoll123';
+
 function newKeyId() {
   return 'k_' + crypto.randomBytes(6).toString('hex');
 }
@@ -45,6 +51,7 @@ export class Config {
       version: 1,
       gateway: { apiKeys: [newGatewayKey()] },
       settings: structuredClone(DEFAULT_SETTINGS),
+      dashboard: { loginEnabled: true },
       providers: {},
       customProviders: [],
       ...(raw || {}),
@@ -53,6 +60,10 @@ export class Config {
     this.data.settings = { ...structuredClone(DEFAULT_SETTINGS), ...(this.data.settings || {}) };
     this.data.settings.timeouts = { ...DEFAULT_SETTINGS.timeouts, ...(this.data.settings.timeouts || {}) };
     this.data.gateway = this.data.gateway || { apiKeys: [newGatewayKey()] };
+    // Dashboard auth — default AKTIF dengan password default (disimpan sebagai hash)
+    this.data.dashboard = this.data.dashboard || {};
+    if (!this.data.dashboard.passwordHash) this.data.dashboard.passwordHash = sha256(DEFAULT_DASHBOARD_PASSWORD);
+    this.data.dashboard.loginEnabled = this.data.dashboard.loginEnabled !== false;
     if (!Array.isArray(this.data.gateway.apiKeys) || this.data.gateway.apiKeys.length === 0) {
       this.data.gateway.apiKeys = [newGatewayKey()];
     }
@@ -148,6 +159,19 @@ export class Config {
     if (p.keys.length === before) return false;
     this.save();
     return true;
+  }
+
+  isDefaultDashboardPassword() {
+    return this.data.dashboard.passwordHash === sha256(DEFAULT_DASHBOARD_PASSWORD);
+  }
+
+  verifyDashboardPassword(pw) {
+    return !!pw && this.data.dashboard.passwordHash === sha256(String(pw));
+  }
+
+  setDashboardPassword(pw) {
+    this.data.dashboard.passwordHash = sha256(String(pw));
+    this.save();
   }
 
   findKey(providerId, keyId) {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { Send, Sparkles, Square, User, Bot } from 'lucide-react';
+import { Check, Loader2, Send, Sparkles, Square, Target, User, Bot } from 'lucide-react';
 import { useStore } from '../store.jsx';
 import { streamChat } from '../api.js';
 import { Btn, Card } from '../components/ui.jsx';
@@ -101,7 +101,7 @@ export default function Playground() {
             <div className="h-full min-h-[200px] flex flex-col items-center justify-center text-center gap-2 text-mist-500">
               <Bot size={28} className="text-brand-400/60" />
               <p className="text-sm">Kirim pesan pertamamu —</p>
-              <p className="text-xs">saksikan fallback bekerja live ⚡</p>
+              <p className="text-xs">saksikan fallback bekerja live</p>
             </div>
           )}
           {messages.filter((m) => m.role !== 'system').map((m, i) => (
@@ -111,7 +111,7 @@ export default function Playground() {
                 {m.role === 'user' ? <User size={14} className="text-mist-400" /> : <Bot size={14} className="text-white" />}
               </div>
               <div className={clsx(
-                'px-3.5 py-2.5 rounded-2xl text-[13.5px] leading-relaxed whitespace-pre-wrap break-words',
+                'px-3.5 py-2.5 rounded-2xl text-[13.5px] leading-relaxed whitespace-pre-wrap break-words animate-[pop_.22s_ease]',
                 m.role === 'user'
                   ? 'bg-gradient-to-br from-brand-500 to-brand-600 text-white rounded-tr-md'
                   : m.error ? 'bg-red-500/10 border border-red-500/25 text-red-200 rounded-tl-md'
@@ -146,15 +146,15 @@ export default function Playground() {
         <div className="mt-2.5 min-h-[20px] text-xs text-mist-500 flex flex-wrap items-center gap-2">
           {meta && (
             <>
-              <span className="text-emerald-400 font-medium">✓ {meta.provider}</span>
+              <span className="flex items-center gap-1 text-emerald-400 font-medium"><Check size={12} /> {meta.provider}</span>
               <span className="font-mono">{meta.model}</span>
               <span>· {meta.ms}ms</span>
               {meta.trail?.length
                 ? <TrailChips trail={meta.trail} />
-                : <span className="text-mist-500/70">· first hit 🎯</span>}
+                : <span className="flex items-center gap-1 text-mist-500/70">· first hit <Target size={11} /></span>}
             </>
           )}
-          {busy && <span className="text-brand-400">⚡ menghubungi provider…</span>}
+          {busy && <span className="flex items-center gap-1.5 text-brand-400"><Loader2 size={12} className="animate-spin" /> menghubungi provider…</span>}
         </div>
       </Card>
     </div>

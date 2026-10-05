@@ -7,6 +7,7 @@ import Playground from '../src/pages/Playground.jsx';
 import Providers from '../src/pages/Providers.jsx';
 import Routing from '../src/pages/Routing.jsx';
 import Logs from '../src/pages/Logs.jsx';
+import Admin from '../src/pages/Admin.jsx';
 
 const now = Date.now();
 
@@ -33,6 +34,7 @@ const mock = {
       authRequired: true, allowAnyFallback: true,
       timeouts: { connectMs: 8000, firstByteMs: 20000, totalMs: 180000, streamIdleMs: 60000 },
     },
+    dashboard: { loginEnabled: true, defaultPassword: true },
   },
   status: {
     version: '0.1.0-test', uptimeSec: 125, port: 5151,
@@ -64,6 +66,7 @@ const PAGES = [
   ['providers', Providers],
   ['routing', Routing],
   ['logs', Logs],
+  ['admin', Admin],
 ];
 
 let failed = 0;
@@ -78,8 +81,9 @@ for (const [name, Page] of PAGES) {
       overview: html.includes('Kesehatan provider'),
       playground: html.includes('Tulis pesan'),
       providers: html.includes('Provider gratis'),
-      routing: html.includes('Strategi routing'),
+      routing: html.includes('Strategi routing') && !html.includes('Gateway API key'),
       logs: html.includes('Log request') && html.includes('Jejak fallback'),
+      admin: html.includes('Akses dashboard') && html.includes('Ganti password'),
     };
     const ok = checks[name];
     console.log(`${ok ? '✓' : '⚠'}  ${name.padEnd(11)} ${html.length.toString().padStart(6)} chars${ok ? '' : ' (konten tak terverifikasi)'}`);

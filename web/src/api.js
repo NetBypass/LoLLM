@@ -1,26 +1,68 @@
-// LoLLM dashboard — API client (session bootstrap + streaming chat).
+// LoLLM dashboard — API client (session, login, streaming chat).
 
 const BOOT = (typeof window !== 'undefined' && window.__LOLLM__) || {};
 export const VERSION = BOOT.version || '';
 
 let SESSION = BOOT.session || '';
+try { if (!SESSION && typeof sessionStorage !== 'undefined') SESSION = sessionStorage.getItem('lollm-session') || ''; } catch { /* ignore */ }
+
 let sessionPromise = null;
 
-// Fallback untuk dev mode (vite) atau setelah gateway restart: ambil session per-boot.
+export function hasSession() {
+  return !!SESSION;
+}
+
+export function setSession(s) {
+  SESSION = s || '';
+  try { sessionStorage.setItem('lollm-session', SESSION); } catch { /* ignore */ }
+  if (SESSION) sessionPromise = null;
+}
+
+function clearSession() {
+  SESSION = '';
+  sessionPromise = null;
+  try { sessionStorage.removeItem('lollm-session'); } catch { /* ignore */ }
+}
+
+function needsLoginEvent() {
+  try { dispatchEvent(new CustomEvent('lollm:needs-login')); } catch { /* ignore */ }
+}
+
+// Untuk dev mode (vite) atau setelah gateway restart dengan login nonaktif.
 async function ensureSession() {
   if (SESSION) return;
   if (!sessionPromise) {
     sessionPromise = fetch('/api/session')
-      .then((r) => r.json())
-      .then((j) => { SESSION = j.session || ''; })
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (j?.session) { setSession(j.session); return; }
+        if (j?.error?.loginRequired || r.status === 401) needsLoginEvent();
+      })
       .catch(() => {});
   }
   await sessionPromise;
 }
 
-function resetSession() {
-  SESSION = '';
-  sessionPromise = null;
+export async function login(password) {
+  const r = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(j?.error?.message || 'Login gagal');
+    err.wrongPassword = !!j?.error?.wrongPassword;
+    err.tooMany = r.status === 429;
+    throw err;
+  }
+  setSession(j.session);
+  return j;
+}
+
+export async function logout() {
+  clearSession();
+  needsLoginEvent();
 }
 
 export async function api(path, opts = {}) {
@@ -32,9 +74,16 @@ export async function api(path, opts = {}) {
   if (opts.body) o.body = JSON.stringify(opts.body);
   let r = await fetch('/api/' + path, o);
   if (r.status === 401) {
-    // session mungkin berganti (gateway restart) — ambil ulang & coba sekali lagi
-    resetSession();
+    const j = await r.json().catch(() => ({}));
+    if (j?.error?.loginRequired) {
+      clearSession();
+      needsLoginEvent();
+      throw new Error('Login diperlukan');
+    }
+    // session basi (gateway restart & login nonaktif) — ambil ulang sekali
+    clearSession();
     await ensureSession();
+    if (!SESSION) throw new Error('Login diperlukan');
     o.headers['x-lollm-session'] = SESSION;
     r = await fetch('/api/' + path, o);
   }

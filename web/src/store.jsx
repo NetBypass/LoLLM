@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { api } from './api.js';
+import { api, hasSession } from './api.js';
 
 const Ctx = createContext(null);
 export const StoreContext = Ctx;
@@ -9,6 +9,10 @@ export function StoreProvider({ children }) {
   const [tab, setTab] = useState(() =>
     typeof location !== 'undefined' ? (location.hash.replace(/^#\/?/, '') || 'overview') : 'overview'
   );
+  const [needsLogin, setNeedsLogin] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return !!window.__LOLLM__?.loginRequired && !hasSession();
+  });
   const [boot, setBoot] = useState(null);
   const [status, setStatus] = useState(null);
   const [logs, setLogs] = useState([]);
@@ -22,7 +26,7 @@ export function StoreProvider({ children }) {
   }, []);
 
   const refreshBoot = useCallback(async () => {
-    try { setBoot(await api('bootstrap')); } catch { /* biarkan halaman lain yang tunjukkan error */ }
+    try { setBoot(await api('bootstrap')); } catch { /* halaman lain menampilkan error */ }
   }, []);
   const refreshStatus = useCallback(async () => {
     try { setStatus(await api('status')); } catch { /* silent */ }
@@ -37,6 +41,19 @@ export function StoreProvider({ children }) {
     await Promise.all([refreshBoot(), refreshStatus()]);
   }, [refreshBoot, refreshStatus]);
 
+  // Login flow
+  const onLogin = useCallback((session) => {
+    setNeedsLogin(false);
+    reload();
+    refreshLogs();
+  }, [reload, refreshLogs]);
+
+  useEffect(() => {
+    const h = () => setNeedsLogin(true);
+    addEventListener('lollm:needs-login', h);
+    return () => removeEventListener('lollm:needs-login', h);
+  }, []);
+
   // Hash routing
   const go = useCallback((t) => { location.hash = '#/' + t; setTab(t); }, []);
   useEffect(() => {
@@ -45,16 +62,31 @@ export function StoreProvider({ children }) {
     return () => removeEventListener('hashchange', onHash);
   }, []);
 
-  // Polling
-  useEffect(() => { reload(); refreshLogs(); }, [reload, refreshLogs]);
-  useEffect(() => { const t = setInterval(refreshStatus, 8000); return () => clearInterval(t); }, [refreshStatus]);
-  useEffect(() => { const t = setInterval(refreshLogs, 4000); return () => clearInterval(t); }, [refreshLogs]);
+  // Initial + polling (berhenti saat belum login)
+  useEffect(() => {
+    if (needsLogin) return;
+    reload();
+    refreshLogs();
+  }, [needsLogin, reload, refreshLogs]);
+  useEffect(() => {
+    if (needsLogin) return;
+    const t = setInterval(refreshStatus, 8000);
+    return () => clearInterval(t);
+  }, [needsLogin, refreshStatus]);
+  useEffect(() => {
+    if (needsLogin) return;
+    const t = setInterval(refreshLogs, 4000);
+    return () => clearInterval(t);
+  }, [needsLogin, refreshLogs]);
 
-  // Model list untuk playground (lazy)
-  useEffect(() => { if ((tab === 'playground' || tab === 'providers') && models === null) refreshModels(); }, [tab, models, refreshModels]);
+  // Model list (playground/providers) — lazy
+  useEffect(() => {
+    if (needsLogin) return;
+    if ((tab === 'playground' || tab === 'providers') && models === null) refreshModels();
+  }, [tab, needsLogin, models, refreshModels]);
 
   return (
-    <Ctx.Provider value={{ tab, go, boot, status, logs, models, toasts, toast, reload, refreshBoot, refreshStatus, refreshLogs, refreshModels }}>
+    <Ctx.Provider value={{ tab, go, needsLogin, onLogin, boot, status, logs, models, toasts, toast, reload, refreshBoot, refreshStatus, refreshLogs, refreshModels }}>
       {children}
     </Ctx.Provider>
   );

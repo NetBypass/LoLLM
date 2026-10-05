@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import clsx from 'clsx';
-import { RefreshCw, ScrollText, Trash2, Zap } from 'lucide-react';
+import { Check, RefreshCw, ScrollText, Trash2, Zap } from 'lucide-react';
 import { useStore } from '../store.jsx';
 import { api, fmtMs, timeAgo } from '../api.js';
 import { Btn, Card, ConfirmBtn, Empty } from '../components/ui.jsx';
@@ -91,7 +91,7 @@ export default function Logs() {
       {filtered.length === 0 ? (
         <Empty>
           {logs.length === 0
-            ? <>Belum ada request lewat gateway. Coba tab <b className="text-mist-300">Playground</b> 🚀</>
+            ? <>Belum ada request lewat gateway. Coba tab <b className="text-mist-300">Playground</b></>
             : <>Tidak ada log dengan filter “{filter === 'ok' ? 'Sukses' : 'Gagal'}”.</>}
         </Empty>
       ) : (
@@ -131,7 +131,7 @@ export default function Logs() {
                     <div className="flex flex-wrap gap-1 max-w-[280px]">
                       {l.status === 200 && (
                         <span className="inline-flex items-center gap-1 font-mono text-[10px] px-1.5 py-0.5 rounded border bg-emerald-400/10 text-emerald-300 border-emerald-400/20">
-                          <Zap size={9} /> {l.provider}{l.key ? '/' + l.key : ''} ✓
+                          <Zap size={9} /> {l.provider}{l.key ? '/' + l.key : ''} <Check size={9} />
                         </span>
                       )}
                       {(l.trail || []).map((t, j) => <TrailChip key={j} t={t} />)}
