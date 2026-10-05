@@ -1,0 +1,31 @@
+{
+  "name": "lollm",
+  "version": "0.1.0",
+  "description": "LoLLM — Local LLM Gateway. One port, multi-key pools, lightning fallback, built-in free providers. Zero dependencies.",
+  "type": "module",
+  "bin": {
+    "lollm": "bin/lollm.js"
+  },
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node bin/lollm.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "llm",
+    "gateway",
+    "openai-compatible",
+    "proxy",
+    "router",
+    "fallback",
+    "key-pool",
+    "free-api"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NetBypass/LoLLM"
+  }
+}
