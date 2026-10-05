@@ -145,6 +145,45 @@ export async function streamChat({ model, messages, signal, onDelta }) {
   return { text, provider, model: finalModel, ms: Math.round(performance.now() - t0), trail: decodeTrail(trailRaw) };
 }
 
+// ---------- clipboard ----------
+// Salin teks dengan rantai fallback: Clipboard API → execCommand → prompt manual.
+// Wajib ada fallback: navigator.clipboard gagal di iframe (butuh permission
+// clipboard-write) dan di konteks http non-localhost.
+export async function copyText(text) {
+  const s = String(text ?? '');
+  if (!s) return false;
+
+  // 1) Clipboard API — hanya jalan di secure context & dengan permission
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard && typeof window !== 'undefined' && window.isSecureContext) {
+      await navigator.clipboard.writeText(s);
+      return true;
+    }
+  } catch { /* jatuh ke fallback */ }
+
+  // 2) execCommand('copy') — deprecated tapi bekerja di hampir semua konteks (http, iframe)
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = s;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    const sel = document.getSelection();
+    const savedRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, s.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (savedRange) { try { sel.removeAllRanges(); sel.addRange(savedRange); } catch { /* ignore */ } }
+    if (ok) return true;
+  } catch { /* jatuh ke fallback */ }
+
+  // 3) Terakhir: prompt supaya user tetap bisa menyalin manual
+  try { window.prompt('Klik teks lalu salin manual (Ctrl+C / Cmd+C):', s); } catch { /* ignore */ }
+  return false;
+}
+
 // ---------- format helpers ----------
 export const fmtMs = (ms) => (ms == null ? '—' : ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms');
 export const fmtNum = (n) => (n ?? 0).toLocaleString('id');

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import clsx from 'clsx';
-import { Ban, Check, Clock3, Copy, X } from 'lucide-react';
+import { AlertTriangle, Ban, Check, Clock3, Copy, X } from 'lucide-react';
+import { copyText } from '../api.js';
 
 export function Btn({ variant = 'default', size = 'md', className, ...props }) {
   return (
@@ -54,18 +55,23 @@ export function TierBadge({ tier }) {
   return <span className={clsx('text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full border', cls)}>{label}</span>;
 }
 
-export function CopyBtn({ text, label }) {
-  const [ok, setOk] = useState(false);
+export function CopyBtn({ text, label = 'Salin' }) {
+  const [state, setState] = useState('idle'); // idle | ok | err
+  let timer;
+  const click = async () => {
+    const ok = await copyText(text);
+    setState(ok ? 'ok' : 'err');
+    clearTimeout(timer);
+    timer = setTimeout(() => setState('idle'), 1600);
+  };
   return (
-    <Btn size="sm" onClick={async () => {
-      try {
-        await navigator.clipboard.writeText(text);
-        setOk(true);
-        setTimeout(() => setOk(false), 1200);
-      } catch { /* ignore */ }
-    }}>
-      {ok ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
-      {label}
+    <Btn size="sm" onClick={click} title={state === 'err' ? 'Clipboard diblokir browser — teks dibuka di kotak dialog untuk disalin manual' : 'Salin ke clipboard'}>
+      {state === 'ok'
+        ? <Check size={13} className="text-emerald-400" />
+        : state === 'err'
+          ? <AlertTriangle size={13} className="text-amber-400" />
+          : <Copy size={13} />}
+      {state === 'ok' ? 'Tersalin' : state === 'err' ? 'Gagal' : label}
     </Btn>
   );
 }
