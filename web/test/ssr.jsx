@@ -1,4 +1,6 @@
-// Smoke test SSR: render semua halaman dengan data mock — menangkap ReferenceError/undefined crash.
+// Smoke test SSR: render semua halaman dengan data fixture test-only — menangkap
+// ReferenceError/undefined crash. Fixture ini TIDAK PERNAH dipakai runtime gateway;
+// gateway selalu memakai data nyata dari endpoint provider.
 // Jalankan: npm test (dari web/)
 import { renderToString } from 'react-dom/server';
 import { StoreContext } from '../src/store.jsx';
@@ -11,7 +13,7 @@ import Admin from '../src/pages/Admin.jsx';
 
 const now = Date.now();
 
-const mock = {
+const fixture = {
   tab: 'logs',
   go() {},
   boot: {
@@ -22,15 +24,15 @@ const mock = {
       { id: 'pollinations', name: 'Pollinations', tier: 'free', baseUrl: 'https://x', keyless: true, note: 'tanpa key', defaultModel: 'openai', models: ['openai'], priority: 30 },
     ],
     customProviders: [
-      { id: 'mocka', name: 'Mock A', tier: 'custom', style: 'openai', baseUrl: 'http://localhost:9101/v1', getKey: null, note: 'Custom provider', defaultModel: 'mock-1', models: [], priority: 60 },
+      { id: 'contoh', name: 'Contoh Custom', tier: 'custom', style: 'openai', baseUrl: 'https://gateway.contoh.dev/v1', getKey: null, note: 'Custom provider', defaultModel: 'contoh-model-a', models: [], priority: 60 },
     ],
     providers: {
-      groq: { enabled: true, keys: [{ id: 'k1', label: 'key-1', value: 'gsk_secret', addedAt: now, status: 'ok', enabled: true, success: 3, fail: 1 }], meta: { name: 'Groq', tier: 'free', baseUrl: 'x' } },
+      groq: { enabled: true, keys: [{ id: 'k1', label: 'key-1', value: 'fixture-key', addedAt: now, status: 'ok', enabled: true, success: 3, fail: 1 }], meta: { name: 'Groq', tier: 'free', baseUrl: 'x' } },
       pollinations: { enabled: true, keys: [{ id: 'keyless', label: 'keyless', value: '', status: 'ok', enabled: true, success: 1, fail: 0 }], meta: { name: 'Pollinations', tier: 'free', baseUrl: 'x' } },
-      mocka: { enabled: true, keys: [{ id: 'k2', label: 'key-2', value: 'sk-dead', status: 'dead', enabled: true, success: 0, fail: 2, lastError: 'HTTP 401' }], meta: { name: 'Mock A', tier: 'custom', baseUrl: 'x' } },
+      contoh: { enabled: true, keys: [{ id: 'k2', label: 'key-2', value: 'fixture-key-mati', status: 'dead', enabled: true, success: 0, fail: 2, lastError: 'HTTP 401' }], meta: { name: 'Contoh Custom', tier: 'custom', baseUrl: 'x' } },
     },
     settings: {
-      strategy: 'failover', providerOrder: ['groq', 'mocka'], maxAttempts: 6,
+      strategy: 'failover', providerOrder: ['groq', 'contoh'], maxAttempts: 6,
       authRequired: true, allowAnyFallback: true,
       timeouts: { connectMs: 8000, firstByteMs: 20000, totalMs: 180000, streamIdleMs: 60000 },
     },
@@ -41,16 +43,16 @@ const mock = {
     stats: { requests: 12, ok: 9, fail: 3, fallbacks: 4, totalMs: 5400, tokensIn: 420, tokensOut: 210, byProvider: { groq: { ok: 8, fail: 1, ms: 3000 } } },
     health: [
       { id: 'groq', name: 'Groq', tier: 'free', state: 'up', keys: { ok: 1, cooling: 0, dead: 0, disabled: 0 }, baseUrl: 'https://api.groq.com/openai/v1', keyless: false },
-      { id: 'mocka', name: 'Mock A', tier: 'custom', state: 'down', keys: { ok: 0, cooling: 0, dead: 1, disabled: 0 }, baseUrl: 'http://x', keyless: false },
+      { id: 'contoh', name: 'Contoh Custom', tier: 'custom', state: 'down', keys: { ok: 0, cooling: 0, dead: 1, disabled: 0 }, baseUrl: 'http://x', keyless: false },
     ],
   },
   logs: [
     { ts: now - 4000, requestId: 'r1', model: 'auto', finalModel: 'llama-3.3-70b-versatile', provider: 'groq', key: 'key-1', stream: true, status: 200, ms: 340, usage: '11→7', trail: [] },
-    { ts: now - 9000, requestId: 'r2', model: 'mock-1', stream: false, status: 502, ms: 8200, trail: [{ provider: 'mocka', key: 'key-2', model: 'mock-1', kind: 'auth', status: 401, error: 'HTTP 401 dari Mock A', ms: 500 }, { provider: 'pollinations', key: 'keyless', model: 'openai', kind: 'network', status: 0, error: 'getaddrinfo ENOTFOUND', ms: 8000 }] },
+    { ts: now - 9000, requestId: 'r2', model: 'contoh-model-a', stream: false, status: 502, ms: 8200, trail: [{ provider: 'contoh', key: 'key-2', model: 'contoh-model-a', kind: 'auth', status: 401, error: 'HTTP 401 dari Contoh Custom', ms: 500 }, { provider: 'pollinations', key: 'keyless', model: 'openai', kind: 'network', status: 0, error: 'getaddrinfo ENOTFOUND', ms: 8000 }] },
     { ts: now - 20000, requestId: 'r3', model: 'gemini-flash', stream: true, status: 'aborted', ms: 420, trail: [] },
-    { ts: now - 60000, requestId: 'r4', model: 'llama-3.3-70b', finalModel: 'llama-3.3-70b-versatile', provider: 'groq', key: 'key-1', stream: false, status: 200, ms: 900, usage: '20→15', trail: [{ provider: 'mocka', key: 'key-2', kind: 'rate', status: 429, error: '429', ms: 100 }] },
+    { ts: now - 60000, requestId: 'r4', model: 'llama-3.3-70b', finalModel: 'llama-3.3-70b-versatile', provider: 'groq', key: 'key-1', stream: false, status: 200, ms: 900, usage: '20→15', trail: [{ provider: 'contoh', key: 'key-2', kind: 'rate', status: 429, error: '429', ms: 100 }] },
   ],
-  models: [{ id: 'llama-3.3-70b-versatile', provider: 'groq' }, { id: 'openai', provider: 'pollinations' }, { id: 'mock-1', provider: 'mocka' }],
+  models: [{ id: 'llama-3.3-70b-versatile', provider: 'groq' }, { id: 'openai', provider: 'pollinations' }, { id: 'contoh-model-a', provider: 'contoh' }],
   toasts: [],
   toast() {},
   reload: async () => {},
@@ -73,7 +75,7 @@ let failed = 0;
 for (const [name, Page] of PAGES) {
   try {
     const html = renderToString(
-      <StoreContext.Provider value={mock}>
+      <StoreContext.Provider value={fixture}>
         <Page />
       </StoreContext.Provider>
     );

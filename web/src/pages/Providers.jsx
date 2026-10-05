@@ -142,7 +142,7 @@ function ProviderCard({ p, conf, actions, liveAll, idx = 0 }) {
           </div>
           {bulkOpen && (
             <div className="mt-2.5 animate-[fadein_.2s_ease]">
-              <textarea className="field font-mono" rows={4} placeholder={'Satu key per baris — tempel sebanyak apa pun…\ngsk_abc...\ngsk_def...\ngsk_ghi...'} value={bulkVal} onChange={(e) => setBulkVal(e.target.value)} />
+              <textarea className="field font-mono" rows={4} placeholder={'Satu key per baris — tempel sebanyak apa pun, duplikat otomatis dilewati…'} value={bulkVal} onChange={(e) => setBulkVal(e.target.value)} />
               <div className="flex items-center gap-2.5 mt-2">
                 <Btn variant="primary" size="sm" onClick={bulkAdd}><Plus size={12} /> Masukkan semuanya</Btn>
                 <span className="text-[11px] text-mist-500">duplikat otomatis dilewati</span>
