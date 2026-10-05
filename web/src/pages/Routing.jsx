@@ -227,7 +227,7 @@ export default function Routing() {
           <div className="flex flex-wrap gap-2">
             <Btn onClick={exportCfg}><Download size={14} /> Export config</Btn>
             <label className="inline-flex">
-              <input type="file" accept="application/json,.json" className="hidden" onChange={(e) => importCfg(e.target.files?.[0])} />
+              <input type="file" accept="application/json,.json" className="hidden" onChange={(e) => importCfg(e.target.files?.[0], e)} />
               <span className="inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium bg-white/[0.04] border border-white/10 text-mist-400 hover:text-white hover:border-white/25 transition-all cursor-pointer active:scale-[.97]">
                 <Upload size={14} /> Import config
               </span>

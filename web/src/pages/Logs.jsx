@@ -18,7 +18,10 @@ const KIND_COLOR = {
 function TrailChip({ t }) {
   const kind = t.kind || '?';
   return (
-    <span className={clsx('inline-block font-mono text-[10px] px-1.5 py-0.5 rounded border', KIND_COLOR[kind] || KIND_COLOR.client)}>
+    <span
+      title={t.error || kind}
+      className={clsx('inline-block font-mono text-[10px] px-1.5 py-0.5 rounded border', KIND_COLOR[kind] || KIND_COLOR.client)}
+    >
       {t.provider}/{t.key}:{kind}
     </span>
   );
@@ -27,7 +30,6 @@ function TrailChip({ t }) {
 export default function Logs() {
   const { logs, toast, refreshLogs } = useStore();
   const [filter, setFilter] = useState('all');
-  const [live, setLive] = useState(true);
 
   const filtered = useMemo(() => {
     if (filter === 'ok') return logs.filter((l) => l.status === 200);
@@ -35,44 +37,62 @@ export default function Logs() {
     return logs;
   }, [logs, filter]);
 
-  // Polling dikendalikan lewat store interval; di sini hanya manual refresh.
-  // (Interval store tetap jalan; toggle "live" hanya menghentikan refresh manual otomatis di tab ini.)
-
-  async function clear() {
-    try { await api('logs/clear', { method: 'POST' }); toast('Log dibersihkan'); refreshLogs(); }
-    catch (e) { toast(e.message, 'err'); }
-  }
-
-  const counts = {
+  const counts = useMemo(() => ({
     all: logs.length,
     ok: logs.filter((l) => l.status === 200).length,
     fail: logs.filter((l) => l.status !== 200).length,
-  };
+  }), [logs]);
+
+  async function clear() {
+    try {
+      await api('logs/clear', { method: 'POST' });
+      toast('Log dibersihkan');
+      refreshLogs();
+    } catch (e) { toast(e.message, 'err'); }
+  }
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <SectionTitle icon={ScrollText} hint="terbaru dulu, maks 500">{''}</SectionTitle>
+      {/* Header + filter + aksi */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2.5">
+        <div className="flex items-center gap-2.5">
+          <ScrollText size={16} className="text-brand-400" />
+          <h2 className="text-[15px] font-semibold text-white">Log request</h2>
+          <span className="hidden sm:flex items-center gap-1.5 text-[11px] text-mist-500">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            live · terbaru dulu
+          </span>
+        </div>
+
         <div className="flex gap-1.5">
           {[['all', 'Semua'], ['ok', 'Sukses'], ['fail', 'Gagal']].map(([id, label]) => (
-            <button key={id} onClick={() => setFilter(id)}
-              className={clsx('px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer',
-                filter === id ? 'bg-brand-500/15 border-brand-400/40 text-white' : 'bg-white/[0.03] border-white/[0.08] text-mist-500 hover:text-mist-300')}>
+            <button
+              key={id}
+              onClick={() => setFilter(id)}
+              className={clsx(
+                'px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer',
+                filter === id
+                  ? 'bg-brand-500/15 border-brand-400/40 text-white'
+                  : 'bg-white/[0.03] border-white/[0.08] text-mist-500 hover:text-mist-300'
+              )}
+            >
               {label} <span className="font-mono opacity-70">{counts[id]}</span>
             </button>
           ))}
         </div>
+
         <div className="ml-auto flex items-center gap-2">
-          <Btn size="sm" onClick={() => refreshLogs()}><RefreshCw size={12} /></Btn>
-          <ConfirmBtn onConfirm={clear}><Trash2 size={12} /></ConfirmBtn>
+          <Btn size="sm" onClick={() => refreshLogs()} title="Refresh"><RefreshCw size={12} /></Btn>
+          <ConfirmBtn onConfirm={clear} title="Bersihkan log"><Trash2 size={12} /></ConfirmBtn>
         </div>
       </div>
 
+      {/* Tabel / empty state */}
       {filtered.length === 0 ? (
         <Empty>
           {logs.length === 0
-            ? <>Belum ada request lewat gateway. Coba Playground 🚀</>
-            : <>Tidak ada log dengan filter ini.</>}
+            ? <>Belum ada request lewat gateway. Coba tab <b className="text-mist-300">Playground</b> 🚀</>
+            : <>Tidak ada log dengan filter “{filter === 'ok' ? 'Sukses' : 'Gagal'}”.</>}
         </Empty>
       ) : (
         <Card className="overflow-x-auto">
@@ -90,9 +110,11 @@ export default function Logs() {
             </thead>
             <tbody>
               {filtered.map((l, i) => (
-                <tr key={i} className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors">
-                  <td className="px-4 py-2.5 font-mono text-[11px] text-mist-500 whitespace-nowrap">{timeAgo(l.ts)}</td>
-                  <td className="px-4 py-2.5 font-mono text-[11.5px] text-mist-300 max-w-[220px] truncate">
+                <tr key={l.ts + '-' + i} className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors">
+                  <td className="px-4 py-2.5 font-mono text-[11px] text-mist-500 whitespace-nowrap" title={new Date(l.ts).toLocaleString('id')}>
+                    {timeAgo(l.ts)}
+                  </td>
+                  <td className="px-4 py-2.5 font-mono text-[11.5px] text-mist-300 max-w-[220px] truncate" title={l.model}>
                     {l.model}
                     {l.finalModel && l.finalModel !== l.model && <span className="text-mist-500"> → {l.finalModel}</span>}
                   </td>

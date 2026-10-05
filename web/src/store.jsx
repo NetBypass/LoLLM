@@ -2,10 +2,13 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
 import { api } from './api.js';
 
 const Ctx = createContext(null);
+export const StoreContext = Ctx;
 export const useStore = () => useContext(Ctx);
 
 export function StoreProvider({ children }) {
-  const [tab, setTab] = useState(() => (location.hash.replace(/^#\/?/, '') || 'overview'));
+  const [tab, setTab] = useState(() =>
+    typeof location !== 'undefined' ? (location.hash.replace(/^#\/?/, '') || 'overview') : 'overview'
+  );
   const [boot, setBoot] = useState(null);
   const [status, setStatus] = useState(null);
   const [logs, setLogs] = useState([]);

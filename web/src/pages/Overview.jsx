@@ -29,8 +29,8 @@ export default function Overview() {
   const avg = st.ok ? st.totalMs / st.ok : 0;
   const spark = logs.filter((l) => l.status === 200 && l.ms).slice(0, 24).reverse().map((l) => l.ms);
   const gwKey = (boot?.gatewayKeys || [])[0] || '-';
-  const port = location.port || '5151';
-  const base = `http://localhost:${port}/v1`;
+  const origin = (typeof location !== 'undefined' && location.origin) || 'http://localhost:5151';
+  const base = `${origin}/v1`;
   const curl = `curl ${base}/chat/completions \\
   -H "Authorization: Bearer ${gwKey}" \\
   -H "Content-Type: application/json" \\
