@@ -40,8 +40,8 @@ export default function Overview() {
   const stats = [
     { icon: Activity, label: 'Requests', value: fmtNum(st.requests), countTo: st.requests, fmt: fmtNum, sub: `${fmtNum(st.ok)} sukses · ${fmtNum(st.fail)} gagal`, spark },
     { icon: Gauge, label: 'Tingkat sukses', value: okRate + '%', countTo: okRate, fmt: (v) => v + '%', sub: 'fallback tak terasa' },
-    { icon: Gauge, label: 'Latensi rata²', value: fmtMs(avg), sub: 'first hit per request' },
-    { icon: ArrowLeftRight, label: 'Perpindahan fallback', value: fmtNum(st.fallbacks), countTo: st.fallbacks, fmt: fmtNum, sub: 'lintas key & provider' },
+    { icon: Gauge, label: 'Latensi rata²', value: fmtMs(avg), sub: st.firstTokenSamples ? `stream pertama ${fmtMs(st.firstTokenMs / st.firstTokenSamples)}` : 'first hit per request' },
+    { icon: ArrowLeftRight, label: 'Perpindahan fallback', value: fmtNum(st.fallbacks), countTo: st.fallbacks, fmt: fmtNum, sub: `${fmtNum(st.emptyRejected || 0)} jawaban kosong ditolak · ${fmtNum(st.rateLimited || 0)} dibatasi` },
     { icon: Coins, label: 'Token', value: fmtNum(st.tokensIn) + '→' + fmtNum(st.tokensOut), sub: 'masuk → keluar' },
     { icon: KeyRound, label: 'Key sehat', value: health.reduce((a, p) => a + (p.keys?.ok || 0), 0), countTo: health.reduce((a, p) => a + (p.keys?.ok || 0), 0), fmt: (v) => v, sub: `${health.filter((p) => p.state === 'up').length} provider aktif` },
   ];
@@ -111,9 +111,10 @@ export default function Overview() {
             <div className="absolute top-2.5 right-2.5"><CopyBtn text={curl} /></div>
           </div>
           <p className="text-xs text-mist-500 mt-3 leading-relaxed">
-            Model <code className="font-mono text-neon-400">auto</code> memilih provider sehat terbaik ·{' '}
+            <code className="font-mono text-neon-400">auto</code> menilai semua model live (skor kualitas + task) lalu menguncinya per percakapan ·{' '}
             <code className="font-mono text-neon-400">groq/llama-3.3-70b-versatile</code> mem-pin provider ·{' '}
-            header <code className="font-mono text-neon-400">x-lollm-trail</code> menampilkan jejak fallback.
+            header <code className="font-mono text-neon-400">x-lollm-model</code> / <code className="font-mono text-neon-400">x-lollm-fallbacks</code> /{' '}
+            <code className="font-mono text-neon-400">x-lollm-trail</code> dan field <code className="font-mono text-neon-400">x_lollm</code> menjelaskan apa yang terjadi.
           </p>
         </Card>
       </section>

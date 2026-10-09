@@ -5,29 +5,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { Config } from './config.js';
-import { Router, ApiError } from './router.js';
+import { Config, sanitizeSettings, resolveDataDir } from './config.js';
+import { Router, ApiError, routeKeyFor } from './router.js';
 import { testKey } from './proxy.js';
+import { validateRequest } from './params.js';
+import { RateLimiter, Semaphore } from './ratelimit.js';
 import { CATALOG, catalogById } from './catalog.js';
+import { VERSION } from './version.js';
+import { CORS_HEADERS } from './cors.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.1.0';
 const MAX_BODY = 20 * 1024 * 1024;
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type, x-lollm-session',
-};
+
+// Path yang selalu publik (monitoring / load balancer) — tidak perlu gateway key.
+const PUBLIC_PATHS = new Set(['/health', '/healthz', '/live', '/ready', '/readyz', '/health/ready', '/v1/health', '/status']);
 
 export async function startServer(opts = {}) {
-  const port = opts.port || Number(process.env.PORT) || 5151;
+  const envPort = Number(process.env.PORT);
+  const port = Number.isFinite(Number(opts.port)) && String(opts.port) !== ''
+    ? Number(opts.port)
+    : (Number.isFinite(envPort) && envPort > 0 ? envPort : 5151);
   const host = opts.host || process.env.HOST || '0.0.0.0';
-  const dataDir = opts.dataDir || process.env.LOLLM_HOME || path.resolve(process.cwd(), 'data');
+  const dataDir = resolveDataDir(opts);
 
   const config = new Config(dataDir).load();
   if (opts.noAuth) config.data.settings.authRequired = false;
   const router = new Router(config);
+  const limiter = new RateLimiter(config.data.settings.rateLimit);
+  const gate = new Semaphore(config.data.settings.rateLimit?.maxConcurrent ?? 32);
 
   // Session token dashboard (per boot)
   const sessionToken = crypto.randomBytes(24).toString('hex');
@@ -72,6 +78,8 @@ export async function startServer(opts = {}) {
     res.end(JSON.stringify(obj));
   };
 
+  const apiErrorBody = (message, type = 'server_error', extra = {}) => ({ error: { message, type, ...extra } });
+
   const readBody = (req) => new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -84,13 +92,41 @@ export async function startServer(opts = {}) {
     req.on('error', reject);
   });
 
-  const isGatewayKey = (req) => {
-    const h = req.headers['authorization'] || '';
-    const m = h.match(/^Bearer\s+(.+)$/i);
-    return !!m && config.data.gateway.apiKeys.includes(m[1].trim());
+  const bearerToken = (req) => {
+    const m = String(req.headers['authorization'] || '').match(/^Bearer\s+(.+)$/i);
+    return m ? m[1].trim() : '';
   };
-
+  const isGatewayKey = (req) => {
+    const tok = bearerToken(req);
+    return !!tok && config.data.gateway.apiKeys.includes(tok);
+  };
   const isSession = (req) => req.headers['x-lollm-session'] === sessionToken;
+
+  // ---------- health ----------
+  function handleHealth(res, mode) {
+    const up = Math.floor((Date.now() - router.stats.startedAt) / 1000);
+    const health = router.healthSummary();
+    const providersUp = health.filter((h) => h.state === 'up').length;
+    if (mode === 'live') {
+      return json(res, 200, { ok: true, status: 'alive', version: VERSION, uptimeSec: up }, { 'Cache-Control': 'no-store' });
+    }
+    if (mode === 'ready') {
+      const r = router.readiness();
+      return json(res, r.ready ? 200 : 503, {
+        ok: r.ready, status: r.ready ? 'ready' : 'degraded', version: VERSION, uptimeSec: up,
+        providers: { total: r.providersTotal, up: r.providersUp, usable: r.providersUsable },
+        modelsKnown: r.modelsKnown,
+        reasons: r.reasons,
+      }, { 'Cache-Control': 'no-store' });
+    }
+    return json(res, 200, {
+      ok: true, version: VERSION, name: 'lollm', uptimeSec: up,
+      providers: { total: health.length, up: providersUp },
+      stats: { requests: router.stats.requests, ok: router.stats.ok, fail: router.stats.fail, fallbacks: router.stats.fallbacks, emptyRejected: router.stats.emptyRejected, rateLimited: router.stats.rateLimited },
+      rateLimit: { enabled: limiter.enabled, requestsPerMinute: limiter.perMinute, burst: limiter.burst, maxConcurrent: gate.max },
+      gateway: { authRequired: config.data.settings.authRequired },
+    }, { 'Cache-Control': 'no-store' });
+  }
 
   // ---------- admin API ----------
   async function handleApi(req, res, url) {
@@ -126,7 +162,24 @@ export async function startServer(opts = {}) {
         stats: { ...router.stats, startedAt: undefined, byProvider: router.stats.byProvider },
         health: router.healthSummary(),
         settings: config.data.settings,
+        routing: router.routingInsight(),
+        rateLimit: {
+          enabled: limiter.enabled, requestsPerMinute: limiter.perMinute, burst: limiter.burst,
+          maxConcurrent: gate.max, inFlight: gate.active, trackedClients: limiter.buckets.size,
+        },
       });
+    }
+
+    // Transparansi routing: lihat apa yang akan dipilih 'auto' + alasannya.
+    if (method === 'GET' && (sub === 'routing/auto' || sub === 'routing/preview')) {
+      const task = url.searchParams.get('task') || 'chat';
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 200);
+      return json(res, 200, await router.previewAuto({ task, limit }));
+    }
+
+    if (method === 'POST' && sub === 'routing/warmup') {
+      const r = await router.warmup({ force: true });
+      return json(res, 200, { ok: true, ...r });
     }
 
     if (method === 'GET' && sub === 'logs') {
@@ -158,6 +211,7 @@ export async function startServer(opts = {}) {
       if (!valid.length) throw new ApiError(400, 'Pilih minimal satu model yang valid');
       config.data.settings.hiddenModels = [...new Set([...config.data.settings.hiddenModels, ...valid])];
       config.save();
+      router.invalidateModels();
       return json(res, 200, { ok: true, removed: valid.length, hiddenCount: config.data.settings.hiddenModels.length });
     }
 
@@ -169,6 +223,7 @@ export async function startServer(opts = {}) {
         ? []
         : config.data.settings.hiddenModels.filter((key) => !keys?.has(key));
       config.save();
+      router.invalidateModels();
       return json(res, 200, { ok: true, restored: before - config.data.settings.hiddenModels.length });
     }
 
@@ -262,20 +317,12 @@ export async function startServer(opts = {}) {
 
     if (method === 'PUT' && sub === 'settings') {
       const b = JSON.parse(await readBody(req) || '{}');
-      const s = config.data.settings;
-      if (b.strategy && ['failover', 'round-robin', 'free-first'].includes(b.strategy)) s.strategy = b.strategy;
-      if (Array.isArray(b.providerOrder)) s.providerOrder = b.providerOrder.filter((x) => typeof x === 'string');
-      if (Number.isFinite(Number(b.maxAttempts))) s.maxAttempts = Math.min(Math.max(Number(b.maxAttempts), 1), 12);
-      if (typeof b.authRequired === 'boolean') s.authRequired = b.authRequired;
-      if (typeof b.allowAnyFallback === 'boolean') s.allowAnyFallback = b.allowAnyFallback;
-      if (b.timeouts) {
-        for (const k of ['connectMs', 'firstByteMs', 'totalMs', 'streamIdleMs']) {
-          const v = Number(b.timeouts[k]);
-          if (Number.isFinite(v)) s.timeouts[k] = Math.min(Math.max(v, 1000), 600000);
-        }
-      }
+      sanitizeSettings(config.data.settings, b);
       config.save();
-      return json(res, 200, { ok: true, settings: s });
+      limiter.reconfigure(config.data.settings.rateLimit);
+      gate.setMax(config.data.settings.rateLimit.maxConcurrent);
+      router.invalidateModels(); // kebijakan routing memengaruhi pilihan 'auto'
+      return json(res, 200, { ok: true, settings: config.data.settings });
     }
 
     if (method === 'POST' && sub === 'gateway/rotate') {
@@ -304,7 +351,7 @@ export async function startServer(opts = {}) {
           if (!p || typeof p !== 'object') continue;
           clean[id] = {
             enabled: p.enabled !== false,
-            keys: Array.isArray(p.keys) ? p.keys.filter((k) => k && k.value !== undefined).map((k) => ({
+            keys: Array.isArray(p.keys) ? p.keys.filter((k) => k.value !== undefined).map((k) => ({
               id: k.id || 'k_' + crypto.randomBytes(6).toString('hex'),
               label: k.label || 'key',
               value: String(k.value || ''),
@@ -320,23 +367,10 @@ export async function startServer(opts = {}) {
         // Pastikan provider keyless default tetap ada (tanpa membaca ulang file lama)
         config.ensureKeylessDefaults();
       }
-      if (c.settings && typeof c.settings === 'object') {
-        const s = config.data.settings;
-        const inc = c.settings;
-        if (['failover', 'round-robin', 'free-first'].includes(inc.strategy)) s.strategy = inc.strategy;
-        if (Array.isArray(inc.providerOrder)) s.providerOrder = inc.providerOrder.filter((x) => typeof x === 'string');
-        if (Number.isFinite(Number(inc.maxAttempts))) s.maxAttempts = Math.min(Math.max(Number(inc.maxAttempts), 1), 12);
-        if (typeof inc.authRequired === 'boolean') s.authRequired = inc.authRequired;
-        if (typeof inc.allowAnyFallback === 'boolean') s.allowAnyFallback = inc.allowAnyFallback;
-        if (Array.isArray(inc.hiddenModels)) s.hiddenModels = [...new Set(inc.hiddenModels.filter((x) => typeof x === 'string'))].slice(0, 10000);
-        if (inc.timeouts) {
-          for (const k of ['connectMs', 'firstByteMs', 'totalMs', 'streamIdleMs']) {
-            const v = Number(inc.timeouts[k]);
-            if (Number.isFinite(v)) s.timeouts[k] = Math.min(Math.max(v, 1000), 600000);
-          }
-        }
-      }
+      if (c.settings && typeof c.settings === 'object') sanitizeSettings(config.data.settings, c.settings);
       config.save();
+      limiter.reconfigure(config.data.settings.rateLimit);
+      gate.setMax(config.data.settings.rateLimit.maxConcurrent);
       router.invalidateModels();
       return json(res, 200, { ok: true });
     }
@@ -371,7 +405,7 @@ export async function startServer(opts = {}) {
       return json(res, 200, { ok: true });
     }
 
-    return json(res, 404, { error: { message: `Endpoint /api/${sub} tidak ada` } });
+    return json(res, 404, apiErrorBody(`Endpoint /api/${sub} tidak ada`, 'invalid_request_error'));
   }
 
   function sanitizeKey(key) {
@@ -391,30 +425,78 @@ export async function startServer(opts = {}) {
     }
 
     if (req.method === 'POST' && ['chat/completions', 'completions', 'embeddings'].includes(sub)) {
-      const raw = await readBody(req);
-      let body;
-      try { body = JSON.parse(raw.toString('utf8') || '{}'); } catch {
-        throw new ApiError(400, 'Body JSON tidak valid');
+      // ---- rate limit (per gateway key, fallback IP) ----
+      const rlKey = rateIdentity(req);
+      const rl = limiter.check(rlKey);
+      const rlHeaders = {
+        'x-ratelimit-limit': String(limiter.perMinute),
+        'x-ratelimit-remaining': String(rl.remaining),
+        'x-ratelimit-window': '60',
+      };
+      if (!rl.allowed) {
+        router.stats.rateLimited++;
+        return json(res, 429, apiErrorBody(
+          `Rate limit ${limiter.perMinute} request/menit tercapai. Tunggu ${rl.retryAfterSec}s lalu kirim lagi (retry otomatis dengan backoff disarankan).`,
+          'rate_limit_error', { code: 429, retry_after: rl.retryAfterSec }
+        ), { ...rlHeaders, 'Retry-After': String(rl.retryAfterSec) });
       }
-      const stream = body.stream === true;
-      const requestId = 'req_' + crypto.randomBytes(6).toString('hex');
 
-      // Propagasi disconnect client ke attempt upstream
-      const ac = new AbortController();
-      res.on('close', () => { if (!res.writableFinished) ac.abort(new Error('client-aborted')); });
+      // ---- batas konkurensi: 429 jelas > jawaban kosong diam-diam ----
+      let acquired = gate.tryAcquire();
+      if (!acquired) {
+        acquired = await Promise.race([
+          gate.acquire().then(() => true),
+          new Promise((r) => setTimeout(() => r(false), 5000)),
+        ]);
+      }
+      if (!acquired) {
+        router.stats.rateLimited++;
+        return json(res, 429, apiErrorBody(
+          `Gateway sibuk: ${gate.active}/${gate.max} request sedang berjalan. Coba lagi sebentar.`,
+          'rate_limit_error', { code: 429, retry_after: 2 }
+        ), { ...rlHeaders, 'Retry-After': '2' });
+      }
 
-      const result = await router.route({
-        path: sub,
-        body,
-        stream,
-        clientRes: res,
-        signal: ac.signal,
-        requestId,
-      });
-      return;
+      try {
+        const raw = await readBody(req);
+        let body;
+        try { body = JSON.parse(raw.toString('utf8') || '{}'); } catch {
+          throw new ApiError(400, 'Body JSON tidak valid', { type: 'invalid_request_error', param: 'body' });
+        }
+        // ---- validasi input → 400, bukan jawaban ngawur ----
+        validateRequest(sub, body);
+
+        const stream = body.stream === true;
+        const requestId = 'req_' + crypto.randomBytes(6).toString('hex');
+
+        // Propagasi disconnect client ke attempt upstream
+        const ac = new AbortController();
+        res.on('close', () => { if (!res.writableFinished) ac.abort(new Error('client-aborted')); });
+
+        const result = await router.route({
+          path: sub,
+          body,
+          stream,
+          clientRes: res,
+          signal: ac.signal,
+          requestId,
+          routeKey: routeKeyFor(body, req.headers),
+          extraHeaders: rlHeaders,
+        });
+        return result;
+      } finally {
+        gate.release();
+      }
     }
 
-    return json(res, 404, { error: { message: `Endpoint /v1/${sub} tidak ada`, type: 'invalid_request_error' } });
+    return json(res, 404, apiErrorBody(`Endpoint /v1/${sub} tidak ada`, 'invalid_request_error'));
+  }
+
+  function rateIdentity(req) {
+    const tok = bearerToken(req);
+    if (tok) return 'k:' + hash32(tok);
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    return 'ip:' + (fwd || req.socket?.remoteAddress || '?');
   }
 
   // ---------- handler utama ----------
@@ -425,21 +507,25 @@ export async function startServer(opts = {}) {
     try {
       // CORS preflight
       if (req.method === 'OPTIONS') {
-        res.writeHead(204, CORS_HEADERS);
+        res.writeHead(204, { ...CORS_HEADERS, 'Access-Control-Max-Age': '86400' });
         return res.end();
       }
 
-      if (p === '/healthz') return json(res, 200, { ok: true, version: VERSION, uptimeSec: Math.floor((Date.now() - router.stats.startedAt) / 1000) });
+      // Health / monitoring — selalu publik & murah.
+      if (p === '/healthz' || p === '/health' || p === '/status') return handleHealth(res, 'full');
+      if (p === '/live' || p === '/livez') return handleHealth(res, 'live');
+      if (p === '/ready' || p === '/readyz' || p === '/health/ready') return handleHealth(res, 'ready');
+      if (p === '/v1/health' || p === '/v1/healthz') return handleHealth(res, 'full');
 
       // Static assets dashboard (nama file hashed → cache immutable)
       if (p.startsWith('/assets/')) {
         const rel = path.normalize(p.slice('/assets/'.length)).replace(/^(\.\.[/\\])+/g, '');
         const file = path.join(publicDir, 'assets', rel);
         if (!file.startsWith(path.join(publicDir, 'assets') + path.sep) && file !== path.join(publicDir, 'assets')) {
-          return json(res, 404, { error: { message: 'Not found' } });
+          return json(res, 404, apiErrorBody('Not found', 'invalid_request_error'));
         }
         return fs.readFile(file, (err, data) => {
-          if (err) return json(res, 404, { error: { message: 'Not found' } });
+          if (err) return json(res, 404, apiErrorBody('Not found', 'invalid_request_error'));
           const ext = path.extname(file).toLowerCase();
           res.writeHead(200, {
             'Content-Type': MIME[ext] || 'application/octet-stream',
@@ -462,7 +548,7 @@ export async function startServer(opts = {}) {
       // Saat login dashboard aktif, session HANYA diberikan lewat POST /api/login.
       if (p === '/api/session') {
         if (config.data.dashboard.loginEnabled !== false) {
-          return json(res, 401, { error: { message: 'Login dashboard diperlukan', loginRequired: true } });
+          return json(res, 401, apiErrorBody('Login dashboard diperlukan', 'authentication_error', { loginRequired: true }));
         }
         return json(res, 200, { session: sessionToken, version: VERSION });
       }
@@ -473,7 +559,7 @@ export async function startServer(opts = {}) {
         const now = Date.now();
         const rec = loginAttempts.get(ip);
         if (rec && rec.count >= 10 && now < rec.resetAt) {
-          return json(res, 429, { error: { message: 'Terlalu banyak percobaan login. Tunggu sebentar.' } });
+          return json(res, 429, apiErrorBody('Terlalu banyak percobaan login. Tunggu sebentar.', 'rate_limit_error'), { 'Retry-After': String(Math.max(1, Math.ceil((rec.resetAt - now) / 1000))) });
         }
         let b = {};
         try { b = JSON.parse(await readBody(req) || '{}'); } catch { /* body kosong */ }
@@ -482,13 +568,17 @@ export async function startServer(opts = {}) {
           return json(res, 200, { ok: true, session: sessionToken });
         }
         loginAttempts.set(ip, { count: (rec && now < rec.resetAt ? rec.count : 0) + 1, resetAt: now + 60_000 });
-        return json(res, 401, { error: { message: 'Password salah', wrongPassword: true } });
+        if (loginAttempts.size > 1000) for (const [k, v] of loginAttempts) if (now > v.resetAt) loginAttempts.delete(k);
+        return json(res, 401, apiErrorBody('Password salah', 'authentication_error', { wrongPassword: true }));
       }
 
       // API publik
       if (p === '/v1' || p.startsWith('/v1/')) {
-        if (config.data.settings.authRequired && !isGatewayKey(req) && !isSession(req)) {
-          return json(res, 401, { error: { message: 'API key gateway tidak valid. Kirim header Authorization: Bearer <gateway-key>.', type: 'auth_error' } });
+        if (config.data.settings.authRequired && !isGatewayKey(req) && !isSession(req) && !PUBLIC_PATHS.has(p)) {
+          return json(res, 401, apiErrorBody(
+            'API key gateway tidak valid. Kirim header Authorization: Bearer <gateway-key>.',
+            'authentication_error', { code: 'invalid_api_key' }
+          ));
         }
         return await handleV1(req, res, url);
       }
@@ -496,16 +586,19 @@ export async function startServer(opts = {}) {
       // Admin API
       if (p === '/api' || p.startsWith('/api/')) {
         if (!isSession(req) && !isGatewayKey(req)) {
-          return json(res, 401, { error: { message: 'Akses dashboard ditolak.' } });
+          return json(res, 401, apiErrorBody('Akses dashboard ditolak.', 'authentication_error'));
         }
         return await handleApi(req, res, url);
       }
 
-      return json(res, 404, { error: { message: `Path ${p} tidak ada` } });
+      return json(res, 404, apiErrorBody(`Path ${p} tidak ada`, 'invalid_request_error'));
     } catch (err) {
-      const status = err instanceof ApiError ? err.status : 500;
+      const status = err.status || (err instanceof ApiError ? err.status : 500);
+      const type = err.type || (status >= 500 ? 'server_error' : 'invalid_request_error');
       if (!res.headersSent) {
-        json(res, status, { error: { message: err.message || 'Internal error', ...(err.extra || {}) } });
+        const extra = { ...(err.extra || {}) };
+        for (const k of ['param', 'code', 'retry_after', 'available', 'trail']) if (err[k] !== undefined) extra[k] = err[k];
+        json(res, status, apiErrorBody(err.message || 'Internal error', type, { code: status, param: err.param ?? null, ...extra }));
       } else {
         res.end();
       }
@@ -519,8 +612,20 @@ export async function startServer(opts = {}) {
     server.once('error', reject);
     server.listen(port, host, resolve);
   });
+  const actualPort = server.address()?.port || port;
 
-  return { server, config, router, port, host, sessionToken };
+  // ---- Warm-up: pangkas latensi request pertama ----
+  // Cache daftar model + koneksi TLS sudah panas sebelum traffic masuk; lalu dijaga tetap segar.
+  if (config.data.settings.warmup?.enabled !== false) {
+    router.warmup().catch(() => {});
+    router.startMaintenance(config.data.settings.warmup?.intervalMs || 240_000);
+  }
+
+  return { server, config, router, port: actualPort, requestedPort: port, host, sessionToken, limiter, gate };
 }
 
-function sanitizeKeyUnused() {} // (keep simple)
+function hash32(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}

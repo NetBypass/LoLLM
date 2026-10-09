@@ -10,7 +10,11 @@
   "scripts": {
     "start": "node bin/lollm.js",
     "build:web": "cd web && npm run build",
-    "dev:web": "cd web && npm run dev"
+    "dev:web": "cd web && npm run dev",
+    "test": "node --test test/*.test.mjs",
+    "test:watch": "node --test --watch test/",
+    "test:gateway": "node --test test/gateway.test.mjs",
+    "test:unit": "node --test test/quality.test.mjs test/params.test.mjs"
   },
   "engines": {
     "node": ">=18.0.0"

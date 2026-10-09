@@ -5,8 +5,8 @@
 
 LoLLM adalah gateway LLM lokal-first: dashboard + API OpenAI-compatible berjalan di **satu port**,
 setiap provider bisa diisi **banyak API key** (pool + rotasi otomatis), dan setiap request otomatis
-**fallback** ke key/provider berikutnya **tanpa jeda** — 429, 401, timeout, semua ditangani sebelum
-Anda sempat sadar.
+**fallback** ke key/provider berikutnya **tanpa jeda** — 429, 401, timeout, jawaban kosong, request
+cacat, semuanya ditangani sebelum Anda sempat sadar.
 
 ## ✨ Kenapa LoLLM
 
@@ -16,6 +16,9 @@ Anda sempat sadar.
 | Dashboard | **React 19 + Tailwind**, responsif (sidebar desktop, bottom-nav mobile) | — |
 | Multi-key per provider | ✅ pool + rotasi LRU + cooldown | Sebagian |
 | Fallback | **0ms antar percobaan**, lintas key → lintas provider | Backoff lambat |
+| Pemilihan model | **dinilai per kualitas + task**, stabil antar request | `models[0]` (lotre) |
+| Jawaban kosong | **ditolak** → retry internal lalu 502 (bukan 200 hampa) | 200 `content: ""` |
+| Transparansi | header `x-lollm-*` + field `x_lollm` di body | — |
 | Provider gratis | Katalog bawaan, **tempel key langsung jalan** | Setup manual |
 | Dependensi | **0 (Node.js murni)** | ratusan paket npm |
 | Format | OpenAI-compatible + translasi Anthropic | — |
@@ -46,15 +49,19 @@ Lalu tempel API key gratis dari katalog (lihat tabel di bawah) — tanpa konfigu
 http://localhost:5151
 ├── /                        Dashboard (UI)
 │    Overview · Playground · Providers & Keys · Routing · Logs
-├── /healthz                 Health check
-├── /v1                      API OpenAI-compatible
-│   ├── POST /chat/completions   (stream & non-stream)
+├── /health  /healthz  /live     Health check (publik, tanpa key)
+├── /ready   /readyz             Readiness untuk load balancer (503 bila provider mati)
+├── /v1                          API OpenAI-compatible
+│   ├── POST /chat/completions       (stream & non-stream)
 │   ├── POST /completions
 │   ├── POST /embeddings
-│   └── GET  /models
-└── /api                     Admin API (untuk dashboard)
+│   ├── GET  /models
+│   └── GET  /health
+└── /api                           Admin API (untuk dashboard)
     ├── POST /login                                (password dashboard)
     ├── GET  /bootstrap · /status · /logs · /models
+    ├── GET  /routing/auto?task=chat               ← preview & alasan pemilihan model
+    ├── POST /routing/warmup                       ← panaskan cache katalog + koneksi
     ├── POST /keys (single & bulk) · /keys/test · /keys/toggle
     ├── POST /providers/toggle · /providers/custom
     ├── PUT  /settings · POST /gateway/rotate
@@ -78,6 +85,17 @@ hash SHA-256 di `data/config.json`). Kelola di tab **Admin**:
 - Aktif/nonaktif panel login (saat nonaktif, dashboard terbuka langsung)
 - Rotate gateway API key + reset statistik
 - Login dibatasi 10 percobaan/menit per IP (anti brute-force)
+
+**Gateway key** (yang dipakai klien di header `Authorization`) tidak pernah dicetak penuh di
+log/UI — salin lewat tab Admin, atau dari terminal:
+
+```bash
+node bin/lollm.js key            # cetak key yang tersimpan
+node bin/lollm.js key --rotate   # ganti dengan key baru (yang lama langsung tidak berlaku)
+```
+
+Menjalankan dengan `--no-auth` mematikan pemeriksaan key di `/v1/*` (praktis untuk develop /
+di belakang reverse-proxy); dashboard tetap butuh login kecuali panel login dinonaktifkan.
 
 ## 🎨 Dashboard (React)
 
@@ -119,7 +137,7 @@ Tinggal klik "Ambil key", tempel di dashboard. Tidak perlu setup provider manual
 
 ```
 client → POST /v1/chat/completions  (model: "llama-3.3-70b")
-   └─ Router membangun rantai kandidat:
+   └─ Router menilai SEMUA model live (kualitas + task), lalu membangun rantai kandidat:
         [groq·key-A, groq·key-B, cerebras·key-A, pollinations·keyless]
         ├─ groq·key-A   → 429  ⟶ key di-cooldown, LANJUT (0ms)
         ├─ groq·key-B   → 401  ⟶ key ditandai mati, LANJUT (0ms)
@@ -132,11 +150,195 @@ client → POST /v1/chat/completions  (model: "llama-3.3-70b")
 - **Timeout / 5xx / network** → lanjut ke kandidat berikutnya.
 - **Model sama di provider lain** → otomatis dicoba, dicocokkan dengan **daftar model live** dari endpoint masing-masing.
 - **Last resort** (opsional, default ON): kalau semua kandidat model tsb habis, provider sehat mana pun dipakai —
-  model aktual dilaporkan di header `x-lollm-model`.
+  modelnya **dipilih yang terbaik** di provider itu (bukan model pertama), dan dilaporkan di header
+  `x-lollm-model` + `x-lollm-selection: …,last-resort`.
+- **200 kosong = gagal** — lihat [Tidak ada lagi HTTP 200 tanpa isi](#-tidak-ada-lagi-http-200-tanpa-isi).
+
+## 🎯 Cara `auto` memilih model
+
+`auto` **bukan** "provider pertama, model pertama". Setiap request, gateway menilai **seluruh**
+model live dari **seluruh** provider sehat, lalu mengurutkannya dengan skor deterministik
+(`src/quality.js`):
+
+| Sinyal | Contoh pengaruh |
+|---|---|
+| Keluarga model (frontier vs murah) | `gpt-oss-120b`, `llama-3.3-70b`, `qwen2.5-72b`, `deepseek-v3/r1`, `gemini-2.x` naik |
+| Ukuran parameter dari nama model | `<3B` −38, `3–7B` −20…−8, `≥70B` +8 |
+| Kecocokan task | task **coding** → model code khusus +16; task **chat/translation/summarize** → model coding-only −12 |
+| Kapabilitas bahasa Indonesia | model multilingual +10; model yang condong satu bahasa lain −30 |
+| Kuantisasi (`q2`/`q3`) & model `base` (bukan instruct) | −18 / −8 |
+| Modalitas | model embedding / rerank / audio / guard **dibuang** dari jalur chat (sumber klasik `content` kosong) |
+| Blocklist kualitas | `allam`, `tinyllama`, `smollm`, `gemma-2-2b`, `qwen2.5-0.5b/1.5b/3b`, `llama-3.2-1b/3b`, `phi-2`, … |
+
+**Deteksi task** dilakukan dari prompt (Indonesia + Inggris): `coding`, `reasoning`, `translation`,
+`summarize`, `structured` (JSON), `id-chat`, `chat`. Bisa dipaksa lewat `model: "auto:coding"`.
+
+Stabil dari tiga arah:
+
+1. **Urutan deterministik** — skor desc, lalu prioritas provider, lalu nama model. Urutan daftar
+   live provider yang berubah-ubah tidak lagi mengubah hasil.
+2. **Cache rencana** — hasil penilaian disimpan 20 detik, jadi request beruntun memakai jalur yang sama.
+3. **Routing lengket** — satu percakapan (hash pesan pertama, atau header `x-lollm-route-key`)
+   terkunci ke satu model selama TTL (`routing.stickyTtlMin`, default 30 menit). Multi-turn tidak
+   berganti "kepribadian" di tengah obrolan.
+
+Model yang gagal beruntun (kosong/timeout/5xx) diberi **penalti lunak** sehingga turun peringkat
+lalu pulih sendiri — bukan dimatikan permanen.
+
+Yang **tidak** berubah: `provider/model` selalu mem-pin provider, dan model di blocklist tetap bisa
+dipanggil eksplisit. Blocklist hanya mengatur apa yang boleh dipilih `auto`.
+
+### Intip isi black-box
+
+```bash
+curl -s localhost:5151/api/routing/auto?task=coding -H "Authorization: Bearer <gateway-key>"
+```
+
+```jsonc
+{
+  "task": "coding", "providersScanned": 3, "modelsScanned": 214,
+  "eligible": 180, "aboveThreshold": 96, "minQualityScore": 45,
+  "candidates": [
+    { "provider": "groq", "model": "qwen2.5-coder-32b", "score": 99, "base": 99, "penalty": 0,
+      "tags": ["coding"], "reasons": ["family(84)", "coding-model(+16)"] }
+  ],
+  "excluded": [ { "provider": "pollinations", "model": "allam-2-7b", "excludedReason": "di-blocklist kualitas" } ]
+}
+```
+
+Tab **Routing → Preview pemilihan "auto"** menampilkan hal yang sama + bar skor, lengkap dengan
+model yang disingkirkan dan alasannya.
+
+## 🚫 Tidak ada lagi HTTP 200 tanpa isi
+
+`content` kosong (termasuk `choices: []`, hanya-reasoning, atau stream yang langsung `[DONE]`)
+**bukan** sukses. Alurnya:
+
+```
+kandidat A → 200, content kosong  ⟶ dihitung gagal (kind: "empty"), key TIDAK dihukum
+           ⟶ retry kandidat yang sama (content.emptyRetries)
+           ⟶ lanjut ke kandidat berikutnya (0ms)
+semua kosong ⟶ 502 { error.code: "empty_completion", provider, model, trail }
+```
+
+Dua alasan teknis kenapa ini juga berlaku untuk **streaming**: header response ke klien baru
+ditulis setelah ada bukti isi (delta konten / `tool_calls`); sebelumnya chunk ditahan di memori
+(katup aman 1 MB). Jadi stream kosong bisa diganti attempt lain alih-alih mengirim 200 kosong.
+Kalau upstream benar-benar memotong di tengah jawaban, sebagian jawaban tetap dikirim apa adanya
+dan percobaan berhenti — tidak ada pengulangan ganda.
+
+Sesuai selera lewat `settings.content`: `{ rejectEmpty: true, emptyRetries: 1 }`
+(set `rejectEmpty: false` untuk mengembalikan perilaku lama).
+
+## 🔍 Transparansi: model mana yang benar-benar menjawab
+
+Setiap respons `/v1` membawa:
+
+| Header | Isi |
+|---|---|
+| `x-lollm-provider` | provider yang melayani |
+| `x-lollm-model` | **model akhir** yang dipakai (bisa beda dari yang diminta) |
+| `x-lollm-requested-model` | apa yang klien minta |
+| `x-lollm-selection` | `auto:quality` · `auto:sticky` · `exact` · `fuzzy` · `pin` (+ `last-resort`, `low-confidence`) |
+| `x-lollm-selection-reason` | alasan singkat, mis. `task=coding score=99` |
+| `x-lollm-task` | task yang terdeteksi |
+| `x-lollm-attempts` / `x-lollm-fallbacks` | jumlah percobaan / berapa kali berpindah |
+| `x-lollm-fallback` | `true`/`false` |
+| `x-lollm-trail` | jejak fallback (base64url JSON `provider/key:kind`) |
+| `x-lollm-params` | parameter yang diubah/diabaikan (base64url) |
+| `x-lollm-low-confidence` | muncul bila tak ada model di atas ambang kualitas |
+| `x-lollm-empty-retries` | berapa jawaban kosong yang ditolak & diulang |
+
+Non-stream juga menyisipkan **field `x_lollm`** di body (klien OpenAI mengabaikan field asing):
+
+```jsonc
+{
+  "id": "chatcmpl-…", "model": "qwen2.5-72b-instruct", "choices": [ … ],
+  "x_lollm": {
+    "requested_model": "auto", "model": "qwen2.5-72b-instruct", "provider": "groq",
+    "task": "id-chat", "attempts": 2, "fallbacks": 1, "fallback_occurred": true,
+    "any_fallback": false, "sticky": true, "low_confidence": false, "empty_retries": 0,
+    "selection": { "mode": "auto:quality", "reason": "task=id-chat score=100",
+                   "best": ["groq/qwen2.5-72b-instruct:100", "groq/gpt-oss-120b:95"] },
+    "params": { "forwarded": ["temperature"], "adjusted": [], "ignored": [], "unknown": [] },
+    "gateway_ms": 812, "usage": { "prompt_tokens": 31, "completion_tokens": 148 }
+  }
+}
+```
+
+Stream: metadata yang sama ditulis sebagai **komentar SSE** di awal (`: lollm-meta {…}`) —
+parser OpenAI mengabaikan komentar, jadi aman.
+
+## 🧪 Parameter request
+
+`temperature`, `top_p`, `max_tokens` / `max_completion_tokens`, `n`, `stop`, `seed`, `presence_penalty`,
+`frequency_penalty`, `response_format`, `tools`/`tool_choice`, `logit_bias`, `logprobs`, `user`,
+`stream`/`stream_options` **diteruskan ke provider**. Yang tidak sah tidak dibuang diam-diam:
+
+* di-clamp ke rentang sah (`temperature` 0–2, `top_p` 0–1, `presence/frequency_penalty` ±2) — tercatat di `params.adjusted`;
+* `null` / `NaN` / `max_tokens <= 0` dihapus (nilai-neki inilah yang sering bikin parameter "tidak berpengaruh") — `params.ignored`;
+* `response_format: json_object` pada model yang butuh isyarat → satu system baris "balas hanya JSON" ditambahkan (dilaporkan, tidak senyap);
+* gaya Anthropic: `max_tokens` wajib → default 4096 (bukan 1024 yang memotong jawaban), `stop → stop_sequences`,
+  parameter tanpa padanan dilaporkan sebagai `ignored`;
+* parameter tak dikenal **tetap diteruskan** (forward-compatible) dan muncul di `params.unknown`.
+
+Provider tetap berhak mengabaikan apa pun di sisinya — karena itu gateway **melaporkan** apa yang
+ia kirim alih-alih berjanji. Butuh daftar persis per provider? Lihat jejak di tab **Logs**.
+
+## 🧵 Konteks multi-turn
+
+Riwayat **selalu** dikirim utuh ke model terpilih, apa pun hasil fallback-nya. Dua hal yang membuat
+"context hilang" dibereskan:
+
+* turn `assistant` dengan `content` kosong dibuang — pada banyak model kecil ini yang membuat
+  template chat rusak sehingga pertanyaan terakhir dijawab ngawur;
+* `content` array (multimodal parts) diratakan ke teks untuk provider yang tidak memahaminya;
+* kalau riwayat melebihi `context.maxChars` (default 60 000 karakter ≈ 15k token), yang dipotong
+  adalah turn **di tengah** — `system` + turn terakhir selalu utuh — dan pemangkasan dilaporkan di
+  `x_lollm.params.adjusted`. Tidak ada lagi pemotongan sepihak oleh provider.
+
+Ditambah routing lengket (di atas), satu percakapan memakai model yang sama dari awal sampai akhir.
+
+## 🚦 Rate limit & kapasitas
+
+Default: **600 request/menit + burst 60 per gateway key** (per IP bila auth dimatikan) dan
+**32 request upstream serentak**. Lewat batas → `429` + `Retry-After` + `x-ratelimit-*`,
+dengan pesan yang menyebut batasnya. Antrean request serentak menunggu maksimal 5 detik sebelum
+429 — supaya di bawah beban tinggi klien menerima "sibuk" yang jelas, bukan jawaban kosong.
+
+```jsonc
+{ "error": { "message": "Rate limit 600 request/menit tercapai. Tunggu 3s lalu kirim lagi…",
+             "type": "rate_limit_error", "code": 429, "retry_after": 3 } }
+```
+
+Atur di tab **Routing → Rate limit & kapasitas** (`settings.rateLimit`: `enabled`, `requestsPerMinute`,
+`burst`, `maxConcurrent`). Mengubah limit langsung mereset bucket semua klien.
+
+## 🩺 Health check & warm-up
+
+| Endpoint | Untuk siapa | Isi |
+|---|---|---|
+| `GET /live`, `/livez` | liveness (kubelet) | `{ ok, status: "alive", uptimeSec, version }` — selalu 200 selama proses hidup |
+| `GET /ready`, `/readyz` | load balancer | 200 `ready` / **503 `degraded`** + `providers.{total,up,usable}`, `modelsKnown`, `reasons[]` |
+| `GET /health`, `/healthz`, `/v1/health`, `/status` | monitoring | ringkasan: provider, stats (termasuk `emptyRejected`, `rateLimited`), setting rate limit |
+
+Semua murah (tanpa ke upstream, hanya cache) dan **tidak butuh gateway key**. `/health` &
+`/healthz` adalah alias yang sama; `/v1/health` ada untuk agen yang hanya boleh bicara ke `/v1`.
+
+**Anti cold start:** saat boot gateway menarik katalog model semua provider **paralel** (dulu
+sekuensial — ini penyebab request pertama lambat), sekaligus membuka koneksi TLS ke tiap endpoint,
+lalu menjaganya tetap segar setiap `warmup.intervalMs` (default 4 menit, sebelum TTL 10 menit kedaluwarsa).
+Resolusi `auto` ikut di-cache. Sisanya tinggal `POST /api/routing/warmup` untuk memaksa.
 
 ## 🧰 Konfigurasi
 
 CLI: `node bin/lollm.js [--port 5151] [--host 0.0.0.0] [--data ./data] [--no-auth]`
+
+Semua kebijakan di atas adalah `settings` di `data/config.json` (edit dari tab **Routing**, jangan
+manual kalau bisa): `routing.{autoCandidates,minQualityScore,blocklist,allowLowQuality,stickyAuto,stickyTtlMin}`,
+`content.{rejectEmpty,emptyRetries}`, `context.{enabled,maxChars,minRecentTurns}`,
+`rateLimit.{enabled,requestsPerMinute,burst,maxConcurrent}`, `params.{maxTokensCap,maxN,anthropicMaxTokens}`,
+`warmup.{enabled,intervalMs}`, `timeouts.{connectMs,firstByteMs,totalMs,streamIdleMs}`.
 
 Env: `PORT`, `HOST`, `LOLLM_HOME` (dir data).
 
@@ -158,9 +360,10 @@ satu file JSON, import di mesin baru. ⚠ File berisi API key asli — simpan am
 
 ## 📖 API
 
-OpenAI-compatible penuh di `/v1` (chat/completions, completions, embeddings, models).
-Bonus header observabilitas pada setiap response: `x-lollm-provider`, `x-lollm-model`, `x-lollm-trail`
-(jejak fallback). Model spesial `auto` memilih provider sehat terbaik otomatis.
+OpenAI-compatible penuh di `/v1` (chat/completions, completions, embeddings, models) — plus field
+`x_lollm` di body non-stream. Model spesial `auto` memilih model **berkualitas terbaik** dari provider
+sehat, sesuai task prompt, dan lengket per percakapan. Request cacat (mis. `messages: []`) langsung
+`400 invalid_request_error`, jawaban kosong menghasilkan `502 empty_completion`, beban berlebih `429`.
 Format `provider/model` (mis. `groq/llama-3.3-70b-versatile`) mem-pin provider.
 
 ### Daftar model selalu live — tanpa template/dummy
@@ -183,6 +386,26 @@ Pilih strategi **Free-first** di tab Routing. LoLLM mendahulukan seluruh provide
 sementara provider berbayar tetap menjadi fallback dengan streaming, timeout, dan kualitas request yang sama.
 Tidak ada pemotongan prompt maupun `max_tokens`. Jalur request juga memakai cache model dan penulisan statistik
 tertunda agar disk I/O tidak menghambat respons.
+
+## 🧪 Test
+
+```bash
+npm test              # node --test test/*.test.mjs — nol dependensi, tanpa internet
+npm run test:unit     # hanya kualitas routing & normalisasi parameter
+npm run test:gateway  # end-to-end lewat mock provider (validasi, empty-200, fallback, SSE)
+```
+
+88 test tanpa jaringan (upstream di-mock): validasi 400 (`messages: []`, role aneh, prompt/input
+kosong, body rusak), semua varian "200 tanpa isi" (non-stream, stream, reasoning-only, `choices: []`,
+body non-JSON, JSON-dibalas-ke-request-stream), retry internal lalu fallback ke kandidat berikutnya,
+pemilihan `auto` (deterministik, model lemah tersingkir, task-aware, last-resort tetap berkualitas),
+transparansi (header, field `x_lollm`, komentar SSE, `/api/routing/auto`), penerusan & clamp parameter,
+riwayat multi-turn + pemangkasan aman + sticky routing, `/health` & `/readyz`, 429 + `Retry-After`,
+validasi admin (key duplikat 409, provider tak dikenal 400),
+dan regresi perilaku lama (format OpenAI, streaming, auth 401, CORS, 30 request paralel tanpa jawaban kosong).
+
+Mock upstream + helper ada di `test/helpers/` — dipakai juga sebagai contoh integrasi OpenAI-compatible
+paling kecil. Dashboard punya audit identifier + smoke test SSR sendiri: `cd web && npm test`.
 
 ## License
 

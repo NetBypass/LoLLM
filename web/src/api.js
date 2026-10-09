@@ -101,24 +101,41 @@ export function decodeTrail(b64) {
 
 /**
  * Streaming chat ke /v1/chat/completions (SSE). onDelta dipanggil dengan teks kumulatif.
- * Return { text, provider, model, ms, trail }
+ * Metadata gateway dibaca dari header x-lollm-* supaya user tahu model mana yang
+ * benar-benar menjawab dan apakah fallback terjadi.
+ * Return { text, provider, model, requestedModel, task, selection, fallbacks, lowConfidence, ms, trail }
  */
-export async function streamChat({ model, messages, signal, onDelta }) {
+export async function streamChat({ model, messages, signal, onDelta, params }) {
   const t0 = performance.now();
   await ensureSession();
   const res = await fetch('/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-lollm-session': SESSION },
-    body: JSON.stringify({ model, stream: true, messages }),
+    body: JSON.stringify({ model, stream: true, messages, ...(params || {}) }),
     signal,
   });
   if (!res.ok) {
     const j = await res.json().catch(() => ({}));
-    throw new Error(j?.error?.message || 'HTTP ' + res.status);
+    const err = new Error(j?.error?.message || 'HTTP ' + res.status);
+    err.status = res.status;
+    err.code = j?.error?.code;
+    throw err;
   }
-  const provider = res.headers.get('x-lollm-provider') || '?';
-  const finalModel = res.headers.get('x-lollm-model') || model;
-  const trailRaw = res.headers.get('x-lollm-trail') || '';
+  const h = res.headers;
+  const meta = {
+    provider: h.get('x-lollm-provider') || '?',
+    model: h.get('x-lollm-model') || model,
+    requestedModel: h.get('x-lollm-requested-model') || model,
+    task: h.get('x-lollm-task') || '',
+    selection: h.get('x-lollm-selection') || '',
+    selectionReason: h.get('x-lollm-selection-reason') || '',
+    fallbacks: Number(h.get('x-lollm-fallbacks') || 0),
+    attempts: Number(h.get('x-lollm-attempts') || 1),
+    lowConfidence: h.get('x-lollm-low-confidence') === 'true',
+    emptyRetries: Number(h.get('x-lollm-empty-retries') || 0),
+    params: decodeParams(h.get('x-lollm-params')),
+    trail: decodeTrail(h.get('x-lollm-trail') || ''),
+  };
 
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -142,7 +159,23 @@ export async function streamChat({ model, messages, signal, onDelta }) {
       } catch { /* lewati baris rusak */ }
     }
   }
-  return { text, provider, model: finalModel, ms: Math.round(performance.now() - t0), trail: decodeTrail(trailRaw) };
+  return { text, ...meta, ms: Math.round(performance.now() - t0) };
+}
+
+/** x-lollm-params: base64url "adjusted=a:1→2 | ignored=b" */
+function decodeParams(b64) {
+  if (!b64) return null;
+  try {
+    const s = atob(String(b64).replace(/-/g, '+').replace(/_/g, '/'));
+    const out = { raw: s, adjusted: [], ignored: [], unknown: [] };
+    for (const part of s.split(' | ')) {
+      const [k, v] = part.split('=');
+      if (k === 'adjusted') out.adjusted = v.split(',');
+      else if (k === 'ignored') out.ignored = v.split(',');
+      else if (k === 'unknown') out.unknown = v.split(',');
+    }
+    return out;
+  } catch { return null; }
 }
 
 // ---------- clipboard ----------

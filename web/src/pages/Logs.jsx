@@ -13,6 +13,10 @@ const KIND_COLOR = {
   network: 'bg-slate-400/10 text-slate-300 border-slate-400/20',
   model: 'bg-brand-400/10 text-brand-400 border-brand-400/20',
   client: 'bg-slate-400/10 text-slate-300 border-slate-400/20',
+  // 200 tanpa isi: penyebab paling sering "model menjawab kosong"
+  empty: 'bg-fuchsia-400/10 text-fuchsia-300 border-fuchsia-400/25',
+  upstream_error: 'bg-red-400/10 text-red-300 border-red-400/20',
+  aborted: 'bg-mist-400/10 text-mist-400 border-white/10',
 };
 
 function TrailChip({ t }) {
@@ -114,14 +118,23 @@ export default function Logs() {
                   <td className="px-4 py-2.5 font-mono text-[11px] text-mist-500 whitespace-nowrap" title={new Date(l.ts).toLocaleString('id')}>
                     {timeAgo(l.ts)}
                   </td>
-                  <td className="px-4 py-2.5 font-mono text-[11.5px] text-mist-300 max-w-[220px] truncate" title={l.model}>
-                    {l.model}
-                    {l.finalModel && l.finalModel !== l.model && <span className="text-mist-500"> → {l.finalModel}</span>}
+                  <td className="px-4 py-2.5 font-mono text-[11.5px] text-mist-300 max-w-[260px]" title={[l.model, l.finalModel, l.selection, l.task].filter(Boolean).join(' · ')}>
+                    <div className="truncate">{l.model}</div>
+                    {l.finalModel && l.finalModel !== l.model && <div className="truncate text-mist-500">→ {l.finalModel}</div>}
+                    {(l.selection || l.task || l.lowConfidence || l.anyFallback) && (
+                      <div className="flex flex-wrap gap-1 mt-0.5">
+                        {l.selection && <span className="text-[9.5px] font-mono text-mist-500 border border-white/[0.07] rounded px-1 py-px">{l.selection}</span>}
+                        {l.task && l.task !== 'chat' && <span className="text-[9.5px] font-mono text-brand-300/80 border border-brand-400/20 rounded px-1 py-px">{l.task}</span>}
+                        {l.anyFallback && <span className="text-[9.5px] font-mono text-amber-300/80 border border-amber-400/20 rounded px-1 py-px" title="model lain dipakai karena model asli habis">last-resort</span>}
+                        {l.lowConfidence && <span className="text-[9.5px] font-mono text-red-300/80 border border-red-400/20 rounded px-1 py-px" title="tak ada model di atas ambang kualitas">low-quality</span>}
+                      </div>
+                    )}
                   </td>
-                  <td className="px-4 py-2.5 hidden md:table-cell text-[11px] text-mist-500">{l.stream ? 'sse' : 'json'}</td>
+                  <td className="px-4 py-2.5 hidden md:table-cell text-[11px] text-mist-500">{l.stream ? 'sse' : 'json'}{l.chars ? ` · ${l.chars}c` : ''}</td>
                   <td className="px-4 py-2.5">
                     <span className={clsx('font-mono text-[11.5px] font-semibold',
-                      l.status === 200 ? 'text-emerald-400' : l.status === 'aborted' ? 'text-mist-500' : 'text-red-400')}>
+                      l.status === 200 ? 'text-emerald-400' : l.status === 499 || l.status === 'aborted' || l.status === 'stream-cut' ? 'text-mist-500' : l.status === 502 ? 'text-amber-400' : 'text-red-400')}
+                      title={l.error || ''}>
                       {l.status}
                     </span>
                   </td>
