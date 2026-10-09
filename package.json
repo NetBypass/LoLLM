@@ -1,6 +1,6 @@
 {
   "name": "lollm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "LoLLM — Local LLM Gateway. One port, multi-key pools, lightning fallback, built-in free providers. Zero dependencies.",
   "type": "module",
   "bin": {
@@ -12,9 +12,12 @@
     "build:web": "cd web && npm run build",
     "dev:web": "cd web && npm run dev",
     "test": "node --test test/*.test.mjs",
-    "test:watch": "node --test --watch test/",
+    "test:watch": "node --test --watch test/*.test.mjs",
     "test:gateway": "node --test test/gateway.test.mjs",
-    "test:unit": "node --test test/quality.test.mjs test/params.test.mjs"
+    "test:unit": "node --test test/quality.test.mjs test/params.test.mjs",
+    "docker:build": "docker build -t lollm:dev --build-arg VERSION=$(node -p \"require('./package.json').version\") --build-arg REVISION=$(git rev-parse HEAD) .",
+    "docker:run": "docker run --rm -p 5151:5151 -v lollm-data:/app/data lollm:dev",
+    "test:packaging": "node --test test/packaging.test.mjs"
   },
   "engines": {
     "node": ">=18.0.0"

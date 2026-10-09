@@ -3,6 +3,8 @@ name: Docker image
 on:
   push:
     branches: [main]
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -13,8 +15,124 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
 jobs:
-  build:
+  # Image harus terbukti jalan sebelum apa pun dipublish: build single-platform,
+  # nyalakan containernya, cek dashboard + health + kontrak "tidak ada 200 kosong".
+  smoke:
+    name: Build & smoke test image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (amd64, load ke docker daemon)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: lollm:smoke
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=smoke
+          cache-to: type=gha,mode=max,scope=smoke
+
+      - name: Start container
+        run: |
+          docker run -d --name lollm -p 5151:5151 -v lollm-smoke:/app/data lollm:smoke
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:5151/healthz >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "::error /healthz tidak menjawab dalam 30s"
+          exit 1
+
+      - name: Cek dashboard, health, auth
+        run: |
+          set -euo pipefail
+          # 1) /healthz & /live publik, tanpa key
+          curl -fsS http://127.0.0.1:5151/healthz | node -e '
+            let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+              const j = JSON.parse(s);
+              if (j.ok !== true) throw new Error("/healthz ok != true: " + s);
+              if (!j.version) throw new Error("/healthz tidak memuat version");
+            })'
+          curl -fsS http://127.0.0.1:5151/readyz > /dev/null
+          # 2) dashboard terserve dari public/ yang di-commit
+          curl -fsS http://127.0.0.1:5151/ | grep -q 'id="root"'
+          asset=$(curl -fsS http://127.0.0.1:5151/ | grep -o '/assets/index-[A-Za-z0-9_-]*\.js' | head -1)
+          test -n "$asset"
+          curl -fsS -o /dev/null -w 'asset %{http_code}\n' "http://127.0.0.1:5151$asset"
+          # 3) /v1 terkunci tanpa key, /api butuh sesi dashboard
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5151/v1/models)
+          test "$code" = 401 || { echo "expect 401, got $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5151/api/status)
+          test "$code" = 401 || { echo "expect 401, got $code"; exit 1; }
+          # 4) gateway key bisa diambil dari CLI di dalam container
+          key=$(docker exec lollm node bin/lollm.js key | sed -n 's/^Key      : //p')
+          test -n "$key"
+          curl -fsS http://127.0.0.1:5151/v1/models -H "Authorization: Bearer $key" > /dev/null
+          echo "$key" > /tmp/lollm-key
+
+      - name: Cek kontrak respons (tidak pernah 200 tanpa isi)
+        run: |
+          set -euo pipefail
+          key=$(cat /tmp/lollm-key)
+          # Provider default (pollinations, keyless) kadang tidak reachable dari runner —
+          # yang diuji di sini KONTRAKNYA: 200 hanya bila ada isi, selain itu 4xx/5xx + alasan.
+          curl -s -D /tmp/h -o /tmp/b -w '%{http_code}' \
+            -X POST http://127.0.0.1:5151/v1/chat/completions \
+            -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+            -d '{"model":"auto","messages":[{"role":"user","content":"Balas hanya: ok"}],"max_tokens":8}' > /tmp/code
+          code=$(cat /tmp/code); echo "HTTP $code"
+          node -e '
+            const fs = require("fs");
+            const code = Number(fs.readFileSync("/tmp/code", "utf8").trim());
+            const headers = fs.readFileSync("/tmp/h", "utf8").toLowerCase();
+            const body = fs.readFileSync("/tmp/b", "utf8");
+            if (code === 200) {
+              const j = JSON.parse(body);
+              const content = String(j.choices?.[0]?.message?.content || "");
+              if (!content.trim()) throw new Error("HTTP 200 tanpa content — kontrak dilanggar:\n" + body.slice(0, 400));
+              if (!/"x_lollm"/.test(body)) throw new Error("body sukses tanpa field x_lollm");
+              for (const h of ["x-lollm-provider:", "x-lollm-model:", "x-lollm-fallbacks:"]) {
+                if (!headers.includes(h)) throw new Error("header " + h + " hilang");
+              }
+              console.log("OK: 200 dengan isi, x_lollm + header transparansi lengkap →", j.x_lollm.model);
+            } else if ([404, 502, 503, 429].includes(code)) {
+              const j = JSON.parse(body);
+              if (!j.error?.message) throw new Error(code + " tanpa pesan error: " + body.slice(0, 200));
+              console.log("OK:", code, "—", j.error.message.slice(0, 120));
+            } else {
+              throw new Error("status tak terduga " + code + ": " + body.slice(0, 300));
+            }'
+          grep -i '^x-ratelimit-remaining:' /tmp/h || echo "(rate-limit header tidak ada — ok bila auth nonaktif)"
+
+      - name: Validasi pesan validasi & health
+        run: |
+          set -euo pipefail
+          key=$(cat /tmp/lollm-key)
+          code=$(curl -s -o /tmp/v -w '%{http_code}' -X POST http://127.0.0.1:5151/v1/chat/completions \
+            -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+            -d '{"model":"auto","messages":[]}')
+          test "$code" = 400
+          grep -q 'messages cannot be empty' /tmp/v
+          docker inspect --format '{{.State.Health.Status}}' lollm | grep -Ei 'healthy|starting'
+          curl -fsS http://127.0.0.1:5151/health | grep -q '"emptyRejected"'
+
+      - name: Log container bila gagal
+        if: failure()
+        run: docker logs --tail 200 lollm
+
+  publish:
+    name: Publish ke GHCR
+    needs: smoke
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,12 +150,14 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.IMAGE }}
           tags: |
-            type=raw,value=latest
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=long
 
-      - name: Build and push
+      - name: Build and push (amd64 + arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -45,7 +165,17 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=smoke
+          cache-to: type=gha,mode=max,scope=smoke
           provenance: mode=max
           sbom: true
+
+      - name: Ringkasan tag
+        run: |
+          echo "### Image dipublish" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

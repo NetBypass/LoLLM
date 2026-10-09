@@ -21,6 +21,7 @@ cacat, semuanya ditangani sebelum Anda sempat sadar.
 | Transparansi | header `x-lollm-*` + field `x_lollm` di body | — |
 | Provider gratis | Katalog bawaan, **tempel key langsung jalan** | Setup manual |
 | Dependensi | **0 (Node.js murni)** | ratusan paket npm |
+| Deploy | `node bin/lollm.js` **atau** image GHCR multi-arch (non-root + healthcheck) | butuh runtime khusus |
 | Format | OpenAI-compatible + translasi Anthropic | — |
 
 ## 🚀 Quickstart
@@ -28,6 +29,9 @@ cacat, semuanya ditangani sebelum Anda sempat sadar.
 ```bash
 git clone https://github.com/NetBypass/LoLLM && cd LoLLM
 node bin/lollm.js            # atau: npm start
+
+# …atau lewat container (pengaturan & key bertahan di volume):
+docker run -d -p 5151:5151 -v lollm-data:/app/data ghcr.io/netbypass/lollm:latest
 ```
 
 Buka `http://localhost:5151` → **masuk dengan password default `Edoll123`** (ganti di tab
@@ -113,6 +117,78 @@ npm run dev        # vite di :5173, proxy /api & /v1 ke gateway :5151
 npm run build      # rebuild ke ../public
 npm test           # audit identifier + SSR render semua halaman
 ```
+
+## 🐳 Docker & image
+
+Image dipublish otomatis ke **GHCR** — multi-arch (`linux/amd64`, `linux/arm64`), tanpa dependensi
+runtime di dalam image (dashboard sudah di-commit di `public/`, jadi build image tidak butuh `npm install`).
+
+Volume `/app/data` menyimpan `config.json` (pengaturan + API key + gateway key + statistik),
+jadi upgrade image tidak menghapus apa pun:
+
+```bash
+docker run -d --name lollm -p 5151:5151 -v lollm-data:/app/data ghcr.io/netbypass/lollm:latest
+```
+
+Lalu cetak gateway key (dipakai klien di header `Authorization`) dan buka dashboard:
+
+```bash
+docker exec lollm node bin/lollm.js key
+docker exec lollm node bin/lollm.js key --rotate   # ganti key
+curl -s localhost:5151/health | head -c 200
+```
+
+Buka `http://localhost:5151` → login dashboard (password default `Edoll123`, ganti di tab Admin).
+
+| Hal | Detail |
+|---|---|
+| Image | `ghcr.io/netbypass/lollm:latest` (main), `:0.2.0` / `:0.2` (tag git `v0.2.0`), `:sha-<full>` (siapa pun commit) |
+| Base | `node:22-alpine`, jalan sebagai user non-root `node` |
+| Env | `PORT` (5151), `HOST` (0.0.0.0), `LOLLM_HOME` (`/app/data`), `NODE_ENV` (production) |
+| Healthcheck | `GET /healthz` tiap 30s — liveness murni, tidak menyentuh upstream, jadi container tetap "sehat" walau provider belum diisi |
+| Readiness | `GET /readyz` → 503 + `reasons[]` bila semua provider cooldown/mati (pakai ini untuk rollout gate, bukan untuk healthcheck image) |
+| Stop | `SIGTERM` → shutdown bersih (koneksi client ditutup dulu) |
+| Persistensi | mount `/app/data` (volume named atau bind); tanpa ini pengaturan & key hilang saat upgrade |
+
+Compose:
+
+```yaml
+services:
+  lollm:
+    image: ghcr.io/netbypass/lollm:latest
+    ports: ["5151:5151"]
+    volumes: [lollm-data:/app/data]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5151/healthz"]
+volumes:
+  lollm-data: {}
+```
+
+Build sendiri (mis. untuk arsitektur lain atau image internal):
+
+```bash
+docker build -t lollm:dev \
+  --build-arg VERSION=$(node -p "require('./package.json').version") \
+  --build-arg REVISION=$(git rev-parse HEAD) .
+# atau: npm run docker:build
+```
+
+### Bagaimana image dipublish (CI)
+
+`.github/workflows/docker.yml`:
+
+1. **smoke** — image di-build (single-platform) lalu container-nya benar-benar dijalankan; yang diperiksa:
+   `/healthz` + `/readyz` 200, dashboard terserve (termasuk aset hashed), `/v1/*` & `/api/*` 401 tanpa
+   kredensial, `node bin/lollm.js key` bisa membaca key dari volume, `messages: []` → 400 dengan pesan jelas,
+   dan **kontrak utama**: permintaan `auto` hanya boleh 200 bila `choices[0].message.content` terisi dan
+   membawa `x_lollm` + `x-lollm-*`; kalau upstream rewel harus 404/502/503/429 + pesan, tidak pernah 200 hampa.
+2. **publish** — hanya untuk push di branch default / tag `v*`: build `amd64+arm64`, push ke GHCR,
+   lengkap dengan provenance (SLSA) + SBOM. Tag: `latest`, semver dari tag git, dan `sha-<commit>`.
+
+PR hanya menjalankan smoke (tidak mem-push). Guard statis untuk Dockerfile/`.dockerignore`/workflow
+ada di `test/packaging.test.mjs` (`npm test`), supaya perubahan yang membuat image gagal build atau
+gagal jalan ketahuan tanpa perlu Docker di runner.
 
 ## 🔑 Katalog provider bawaan
 
@@ -395,13 +471,13 @@ npm run test:unit     # hanya kualitas routing & normalisasi parameter
 npm run test:gateway  # end-to-end lewat mock provider (validasi, empty-200, fallback, SSE)
 ```
 
-88 test tanpa jaringan (upstream di-mock): validasi 400 (`messages: []`, role aneh, prompt/input
+99 test tanpa jaringan (upstream di-mock): validasi 400 (`messages: []`, role aneh, prompt/input
 kosong, body rusak), semua varian "200 tanpa isi" (non-stream, stream, reasoning-only, `choices: []`,
 body non-JSON, JSON-dibalas-ke-request-stream), retry internal lalu fallback ke kandidat berikutnya,
 pemilihan `auto` (deterministik, model lemah tersingkir, task-aware, last-resort tetap berkualitas),
 transparansi (header, field `x_lollm`, komentar SSE, `/api/routing/auto`), penerusan & clamp parameter,
 riwayat multi-turn + pemangkasan aman + sticky routing, `/health` & `/readyz`, 429 + `Retry-After`,
-validasi admin (key duplikat 409, provider tak dikenal 400),
+validasi admin (key duplikat 409, provider tak dikenal 400), guard packaging Dockerfile/image + konsistensi versi,
 dan regresi perilaku lama (format OpenAI, streaming, auth 401, CORS, 30 request paralel tanpa jawaban kosong).
 
 Mock upstream + helper ada di `test/helpers/` — dipakai juga sebagai contoh integrasi OpenAI-compatible
