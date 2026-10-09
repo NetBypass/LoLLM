@@ -37,12 +37,14 @@ export function reportSuccess(pconf, keyId) {
   if (!k) return;
   k.status = 'ok';
   k.cooldownUntil = 0;
+  k.failCount = 0;
+  k.emptyCount = 0;
   k.success = (k.success || 0) + 1;
   k.lastUsedAt = Date.now();
 }
 
 /**
- * kind: 'auth' (401/403) | 'rate' (429) | 'timeout' | 'server' | 'network' | 'model' | 'client'
+ * kind: 'auth' (401/403) | 'rate' (429) | 'timeout' | 'server' | 'network' | 'model' | 'client' | 'empty'
  */
 export function reportFailure(pconf, keyId, kind, info = {}) {
   const k = pconf.keys.find((x) => x.id === keyId);
@@ -55,6 +57,11 @@ export function reportFailure(pconf, keyId, kind, info = {}) {
   } else if (kind === 'rate') {
     const sec = Math.min(Math.max(Number(info.retryAfterSec) || 60, 20), 600);
     k.cooldownUntil = Date.now() + sec * 1000;
+  } else if (kind === 'empty') {
+    // 200 tanpa isi bukan kesalahan kredensial: jangan cooldown key (itu memicu 503
+    // berantai saat satu provider sedang ngadat). Yang dihukum adalah MODEL-nya,
+    // lewat Router.noteModelFailure → skor routing turun & pulih sendiri.
+    k.emptyCount = (k.emptyCount || 0) + 1;
   } else if (kind === 'timeout' || kind === 'network' || kind === 'server') {
     k.failCount = (k.failCount || 0) + 1;
     // 3x gagal beruntun → cooldown singkat 30s
@@ -62,6 +69,9 @@ export function reportFailure(pconf, keyId, kind, info = {}) {
       k.cooldownUntil = Date.now() + 30_000;
       k.failCount = 0;
     }
+  } else if (kind === 'client' || kind === 'model') {
+    k.emptyCount = 0;
+    k.failCount = 0;
   }
 }
 
